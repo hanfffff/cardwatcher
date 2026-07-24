@@ -27,11 +27,11 @@ html, body { background-image: none !important; }
 .dash-name { font-size: 0.92rem; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 6px; }
 .dash-secondary { font-size: 0.8rem; color: #888; margin-top: 3px; }
 .dash-empty { color: #999; font-size: 0.85em; padding: 8px 0; }
-.dash-spark-wrap { flex: 0 0 auto; width: 104px; display: flex; align-items: center; justify-content: flex-end; margin-left: 6px; }
-.dash-spark { width: 104px; height: 40px; overflow: visible; opacity: 0.95; }
-/* Multi-column panels (movers, pressure) get cramped when 3-across on mid widths — hide the trend there below 1200px; the single-column supply grid keeps it down to mobile. */
-@media (max-width: 1200px) { .dash-cols .dash-spark-wrap { display: none; } }
-@media (max-width: 460px) { .dash-spark-wrap { display: none; } }
+/* Sparkline sits below the card text (in the empty space beside the tall thumb),
+   so it never competes with the name for width — no title cropping, and it can
+   show in every panel regardless of column count. */
+.dash-spark-wrap { width: 104px; max-width: 100%; margin-top: 8px; }
+.dash-spark { width: 104px; height: 34px; overflow: visible; opacity: 0.95; }
 #header .navbar { height: auto !important; min-height: 45px; }
 #header .navbar > * { align-self: center; }
 @media (max-width: 768px) { main.container { padding-top: 230px !important; } }

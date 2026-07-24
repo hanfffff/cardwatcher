@@ -113,8 +113,8 @@
             '<div class="dash-primary">' + e.primary + "</div>" +
             '<div class="dash-name">' + escapeHtml(meta.name) + "</div>" +
             '<div class="dash-secondary">' + e.secondary + "</div>" +
+            (spark ? '<div class="dash-spark-wrap">' + spark + "</div>" : "") +
           "</div>" +
-          (spark ? '<div class="dash-spark-wrap">' + spark + "</div>" : "") +
         "</a>"
       );
     }).join("");
