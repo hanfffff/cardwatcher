@@ -9,12 +9,15 @@ import os
 import app.dashboard as dashboard
 
 
-def _entry(blend_now, blend_1w, available, added, removed, base):
+def _entry(value_now, value_1w, available, added, removed, base):
+    # 'floor' spelled out rather than dashboard.MARKET_VALUE: the dashboard
+    # ranking on the ask floor (not the sale-sensitive blend) is the behaviour
+    # under test, so a switch back should fail here.
     return {
-        "market": {"blend": blend_now},
+        "market": {"floor": value_now},
         "current_available": available,
         "1w": {
-            "market": {"blend": blend_1w},
+            "market": {"floor": value_1w},
             "listings_added": added,
             "listings_removed": removed,
             "historical_available": base,
@@ -45,19 +48,19 @@ def _segments(pressure_html):
 def test_pressure_bucketing(tmp_path, monkeypatch):
     price_history = {
         # supply drained hard (-50%), price flat (0%) -> coiling
-        "coil": _entry(blend_now=100, blend_1w=100, available=20,
+        "coil": _entry(value_now=100, value_1w=100, available=20,
                        added=0, removed=10, base=20),
         # price up 20%, supply growing (+50%) -> cooling
-        "cool": _entry(blend_now=120, blend_1w=100, available=20,
+        "cool": _entry(value_now=120, value_1w=100, available=20,
                        added=10, removed=0, base=20),
         # price up 20%, supply flat (0%) -> overbought
-        "over": _entry(blend_now=120, blend_1w=100, available=20,
+        "over": _entry(value_now=120, value_1w=100, available=20,
                        added=2, removed=2, base=20),
         # too few available -> excluded from movers/pressure entirely
-        "thin": _entry(blend_now=120, blend_1w=100, available=5,
+        "thin": _entry(value_now=120, value_1w=100, available=5,
                        added=0, removed=0, base=20),
         # has metrics but no active page file -> excluded
-        "gone": _entry(blend_now=120, blend_1w=100, available=20,
+        "gone": _entry(value_now=120, value_1w=100, available=20,
                        added=0, removed=10, base=20),
     }
     pages_dir, changes_dir = _setup(
@@ -79,13 +82,13 @@ def test_pressure_bucketing(tmp_path, monkeypatch):
 
 def test_movers_ranking(tmp_path, monkeypatch):
     price_history = {
-        "big": _entry(blend_now=150, blend_1w=100, available=20,   # +50%
+        "big": _entry(value_now=150, value_1w=100, available=20,   # +50%
                       added=0, removed=0, base=20),
-        "small": _entry(blend_now=110, blend_1w=100, available=20,  # +10%
+        "small": _entry(value_now=110, value_1w=100, available=20,  # +10%
                         added=0, removed=0, base=20),
-        "drop": _entry(blend_now=80, blend_1w=100, available=20,    # -20%
+        "drop": _entry(value_now=80, value_1w=100, available=20,    # -20%
                        added=0, removed=0, base=20),
-        "thin": _entry(blend_now=200, blend_1w=100, available=5,    # excluded
+        "thin": _entry(value_now=200, value_1w=100, available=5,    # excluded
                        added=0, removed=0, base=20),
     }
     pages_dir, changes_dir = _setup(

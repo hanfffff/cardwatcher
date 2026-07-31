@@ -67,7 +67,7 @@ The dashboard and the search gallery are rendered **client-side** in your browse
 
 The home page summarises the most notable movements across all tracked cards in three panels:
 
-- **Biggest price movers** — the top gainers and fallers ranked by their 1-week change in blended market price. Limited to cards with at least 10 available, so thin listings don't dominate.
+- **Biggest price movers** — the top gainers and fallers ranked by their 1-week change in the market floor. Limited to cards with at least 10 available, so thin listings don't dominate. The floor is used rather than the blended price because the blend reacts to realized sales, so a single graded/PSA copy selling for a multiple of the raw price would show up as a large "move" the ask floor never made.
 - **Net supply loss** — cards whose available supply shrank the most over the past week, i.e. are being bought up faster than they are relisted. Again limited to cards that started the week with ≥10 available.
 - **Pressure / divergence** — cards where the *price* move and the *supply* move disagree, which can be an early signal. Each card is bucketed as:
   - **Coiling** — supply has drained sharply but the price hasn't moved yet. The scarcity isn't priced in, so there may be upward pressure building.

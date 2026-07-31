@@ -5,18 +5,26 @@ Reads the precomputed metrics in price_history.json (populated during import by
 watcherbase.calculate_all_period_averages, including the three market-price
 methods) and renders three signal panels:
 
-- Biggest price movers   : largest 1-week % change in the blended market price.
+- Biggest price movers   : largest 1-week % change in the market floor.
 - Net supply loss        : cards whose available supply shrank most this week.
 - Pressure / divergence  : where price and supply changes disagree (potential
                            early signals).
 
-All ranking uses the blended market price ('blend') as the canonical number and
-filters out illiquid cards (see thresholds below).
+All ranking uses the market floor ('floor') as the canonical number and filters
+out illiquid cards (see thresholds below).
 """
 
 import os
 import json
 from app.config import PAGES_DIR, CHANGES_DIR
+
+# The canonical "market value" every panel ranks and displays. The floor (low
+# band of current asks) rather than the blend: the blend carries a realized-sales
+# term, so one outlier sale — a graded/PSA copy going for a multiple of the raw
+# price — drags it up sharply while the actual ask floor has not moved at all.
+# That surfaced as phantom movers. The floor only moves when sellers reprice, and
+# it is also what the browse view shows, so the two now agree.
+MARKET_VALUE = 'floor'
 
 # --- Tunable thresholds ---------------------------------------------------
 MIN_AVAILABLE = 10        # ignore cards with fewer than this many available now
@@ -73,6 +81,11 @@ def _fmt_eur(v):
     return (str(int(v)) if v >= 1000 else str(round(v, 2))) + '€'
 
 
+def _market_value(container):
+    """The canonical market value out of a price_history entry or period dict."""
+    return ((container or {}).get('market') or {}).get(MARKET_VALUE) or 0
+
+
 def build_dashboard():
     """Return {'movers_html', 'supply_html', 'pressure_html'} for the template."""
     price_history = {}
@@ -87,23 +100,22 @@ def build_dashboard():
     # Only consider cards that still have an active page file.
     active_pages = {f[:-5] for f in os.listdir(PAGES_DIR) if f.endswith('.json')}
 
-    movers = []        # (pct, canonical, blend_now, blend_1w)
-    supply = []        # (net_pct, canonical, added, removed, base, blend_now)
+    movers = []        # (pct, canonical, value_now, value_1w)
+    supply = []        # (net_pct, canonical, added, removed, base, value_now)
     pressure_rows = [] # dict per card with price_pct + net_pct for bucketing
 
     for canonical, entry in price_history.items():
         if canonical not in active_pages:
             continue
-        market = entry.get('market') or {}
-        blend_now = market.get('blend') or 0
+        value_now = _market_value(entry)
         available = entry.get('current_available') or 0
         wk = entry.get('1w') or {}
-        blend_1w = (wk.get('market') or {}).get('blend') or 0
+        value_1w = _market_value(wk)
 
         price_pct = None
-        if blend_now > 0 and blend_1w > 0 and available >= MIN_AVAILABLE:
-            price_pct = (blend_now - blend_1w) / blend_1w * 100
-            movers.append((price_pct, canonical, blend_now, blend_1w))
+        if value_now > 0 and value_1w > 0 and available >= MIN_AVAILABLE:
+            price_pct = (value_now - value_1w) / value_1w * 100
+            movers.append((price_pct, canonical, value_now, value_1w))
 
         base = wk.get('historical_available') or 0
         net_pct = None
@@ -115,12 +127,12 @@ def build_dashboard():
                 net_items = (wk.get('listings_added') or 0) - (wk.get('listings_removed') or 0)
             net_pct = net_items / base * 100
             if net_pct < 0:
-                supply.append((net_pct, canonical, base, available, blend_now))
+                supply.append((net_pct, canonical, base, available, value_now))
 
         if price_pct is not None and net_pct is not None:
             pressure_rows.append({
                 'canonical': canonical, 'price_pct': price_pct,
-                'net_pct': net_pct, 'blend_now': blend_now,
+                'net_pct': net_pct, 'value_now': value_now,
             })
 
     # --- Movers: top risers and fallers, shown side by side ---------------
@@ -150,11 +162,11 @@ def build_dashboard():
 
     # --- Net supply loss --------------------------------------------------
     supply.sort(key=lambda x: x[0])  # most negative first
-    def supply_row(net_pct, canonical, base, cur_avail, blend_now):
+    def supply_row(net_pct, canonical, base, cur_avail, value_now):
         return {
             'canonical': canonical, 'color': 'rgb(220,53,69)',
             'primary': f'{round(net_pct,1)}% supply',
-            'secondary': f'{base}→{cur_avail} avail · {_fmt_eur(blend_now)}',
+            'secondary': f'{base}→{cur_avail} avail · {_fmt_eur(value_now)}',
         }
     supply_html = _rows([supply_row(*s) for s in supply[:TOP_N]])
 
@@ -177,7 +189,7 @@ def build_dashboard():
         return {
             'canonical': r['canonical'], 'color': color,
             'primary': f"price {('+' if r['price_pct']>=0 else '')}{round(r['price_pct'],1)}%",
-            'secondary': f"supply {round(r['net_pct'],1)}% · {_fmt_eur(r['blend_now'])}",
+            'secondary': f"supply {round(r['net_pct'],1)}% · {_fmt_eur(r['value_now'])}",
         }
 
     pressure_html = (

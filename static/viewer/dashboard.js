@@ -2,11 +2,22 @@
  *
  * Ranks cards from the precomputed changes/price_history.json into three signal
  * panels (biggest movers, net supply loss, pressure/divergence), using the
- * blended market price and the same thresholds as the Flask dashboard.
+ * market floor and the same thresholds as the Flask dashboard.
  */
 (function () {
   "use strict";
   const { escapeHtml, fetchJSON } = window.CW;
+
+  // The canonical "market value" every panel ranks and displays. The floor (low
+  // band of current asks) rather than the blend: the blend carries a realized-
+  // sales term, so one outlier sale — a graded/PSA copy going for a multiple of
+  // the raw price — drags it up sharply while the actual ask floor has not moved
+  // at all. That surfaced as phantom movers. The floor only moves when sellers
+  // reprice, and it is also what the browse view shows, so the two now agree.
+  const MARKET_VALUE = "floor";
+
+  // Pull the canonical market value out of an entry or one of its period dicts.
+  const marketValue = (c) => ((c || {}).market || {})[MARKET_VALUE] || 0;
 
   // Tunable thresholds (identical to dashboard.py).
   const MIN_AVAILABLE = 10, MIN_BASE = 10, TOP_N = 8;
@@ -45,7 +56,7 @@
   ];
 
   // Build a {age, value} trend series from an entry's period snapshots.
-  //   kind "price"  -> blended market price at each anchor + now
+  //   kind "price"  -> market value at each anchor + now
   //   kind "supply" -> available-listing count at each anchor + now
   function seriesFrom(entry, kind) {
     const pts = [];
@@ -53,12 +64,12 @@
       const period = entry[a.key];
       if (!period) continue;
       const v = kind === "price"
-        ? (period.market || {}).blend
+        ? marketValue(period)
         : period.historical_available;
       if (typeof v === "number" && v > 0) pts.push({ age: a.age, value: v });
     }
     const nowVal = kind === "price"
-      ? (entry.market || {}).blend
+      ? marketValue(entry)
       : entry.current_available;
     if (typeof nowVal === "number" && nowVal > 0) pts.push({ age: 0, value: nowVal });
     return pts;
@@ -126,19 +137,18 @@
     for (const canonical in priceHistory) {
       if (activePages.indexOf(canonical) === -1) continue;
       const entry = priceHistory[canonical];
-      const market = entry.market || {};
-      const blendNow = market.blend || 0;
+      const valueNow = marketValue(entry);
       const available = entry.current_available || 0;
       const wk = entry["1w"] || {};
-      const blend1w = (wk.market || {}).blend || 0;
+      const value1w = marketValue(wk);
 
       const priceSeries = seriesFrom(entry, "price");
       const supplySeries = seriesFrom(entry, "supply");
 
       let pricePct = null;
-      if (blendNow > 0 && blend1w > 0 && available >= MIN_AVAILABLE) {
-        pricePct = (blendNow - blend1w) / blend1w * 100;
-        movers.push({ pct: pricePct, canonical, now: blendNow, prev: blend1w, priceSeries });
+      if (valueNow > 0 && value1w > 0 && available >= MIN_AVAILABLE) {
+        pricePct = (valueNow - value1w) / value1w * 100;
+        movers.push({ pct: pricePct, canonical, now: valueNow, prev: value1w, priceSeries });
       }
 
       const base = wk.historical_available || 0;
@@ -151,11 +161,11 @@
           ? wk.available_change
           : ((wk.listings_added || 0) - (wk.listings_removed || 0));
         netPct = netItems / base * 100;
-        if (netPct < 0) supply.push({ netPct, canonical, base, curAvail: available, blendNow, supplySeries });
+        if (netPct < 0) supply.push({ netPct, canonical, base, curAvail: available, valueNow, supplySeries });
       }
 
       if (pricePct != null && netPct != null) {
-        pressureRows.push({ canonical, price_pct: pricePct, net_pct: netPct, blend_now: blendNow, priceSeries });
+        pressureRows.push({ canonical, price_pct: pricePct, net_pct: netPct, value_now: valueNow, priceSeries });
       }
     }
 
@@ -182,7 +192,7 @@
     const supplyRow = (s) => ({
       canonical: s.canonical, color: "rgb(220,53,69)",
       primary: r1(s.netPct) + "% supply",
-      secondary: s.base + "→" + s.curAvail + " avail · " + fmtEur(s.blendNow),
+      secondary: s.base + "→" + s.curAvail + " avail · " + fmtEur(s.valueNow),
       spark: s.supplySeries,
     });
     const supplyHtml = rows(supply.slice(0, TOP_N).map(supplyRow));
@@ -202,7 +212,7 @@
     const pressureRow = (r, color) => ({
       canonical: r.canonical, color,
       primary: "price " + (r.price_pct >= 0 ? "+" : "") + r1(r.price_pct) + "%",
-      secondary: "supply " + r1(r.net_pct) + "% · " + fmtEur(r.blend_now),
+      secondary: "supply " + r1(r.net_pct) + "% · " + fmtEur(r.value_now),
       spark: r.priceSeries, sparkColor: color,
     });
 
