@@ -128,7 +128,8 @@ def build_search(search_term="", sort_by="name", sort_order="asc", price_period=
                 page.import_page(page_path)
                 for item in collection_items_map[canonical_name]:
                     item_price = calculate_collection_price(
-                        page, item.condition, item.language, item.first_ed, item.reverse_holo
+                        page, item.condition, item.language, item.first_ed, item.reverse_holo,
+                        item.grade_company, item.grade
                     )
                     collection_price += item_price * item.quantity
                     collection_qty += item.quantity

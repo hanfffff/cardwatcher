@@ -29,6 +29,14 @@ if __name__ == '__main__':
 from flask import Flask, render_template, request, redirect, jsonify, send_from_directory
 from flask_session import Session
 from app.language_libraries import *
+from app.grading_libraries import COMPANY_LABELS, COMPANY_ORDER
+
+# The companies offered in the manual grade editor, in the filter's display
+# order, as [value, label] pairs. Taken straight from COMPANY_ORDER so a company
+# added to grading_libraries shows up here without a second edit. The unknown
+# bucket is included on purpose: a slab whose grader you cannot identify is
+# still a slab, and marking it as such keeps it out of the raw price pool.
+GRADING_COMPANY_CHOICES = [[c, COMPANY_LABELS.get(c, c)] for c in COMPANY_ORDER]
 from app.watcherbase import watcherbase
 import app.watchersearch as watchersearch
 import app.dashboard as dashboard
@@ -189,6 +197,8 @@ def cardwatcher():
             cardmarket_link="https://www.cardmarket.com/en/"+page.canonical_name.replace('_','/'),
             country_selection = page.build_country_selection(),
             language_selection = page.build_language_selection(),
+            grading_selection = page.build_grading_selection(),
+            grading_companies = GRADING_COMPANY_CHOICES,
             available_languages = page.languages,
             is_archived=page.isArchived,
             page_name=page_name,
@@ -303,6 +313,49 @@ def api_manifest():
 
 
 # Collection API routes
+@app.route('/api/listing/grade', methods=['POST'])
+def set_listing_grade():
+    """Correct (or clear) the grade parsed out of a listing's comment.
+
+    POST rather than a query-param link like archive/delete because it carries
+    two values, and it matches the /api/collection/* style. The grade is stored
+    with source 'manual' so the next import does not parse over it.
+    """
+    data = request.get_json()
+    if not data or 'canonical_name' not in data or 'row' not in data:
+        return jsonify({"success": False, "message": "Missing canonical_name or row"})
+
+    canonical_name = data['canonical_name']
+    if canonical_name.endswith('.json'):
+        canonical_name = canonical_name[:-5]
+
+    page = watcherbase.get_page(canonical_name + '.json')
+    if not page:
+        return jsonify({"success": False, "message": "Page not found"})
+
+    company = (data.get('company') or '').strip().upper()
+    grade = data.get('grade')
+    if company and company not in COMPANY_ORDER:
+        return jsonify({"success": False, "message": f"Unknown grading company: {company}"})
+    if company and grade is None:
+        return jsonify({"success": False, "message": "A grade is required"})
+
+    if not page.set_listing_grade(int(data['row']), company, grade):
+        return jsonify({"success": False, "message": "No such listing"})
+
+    # Keep the stored metrics in step with the edit, exactly as the archive and
+    # unarchive actions do -- the raw floor may have just changed.
+    watcherbase.update_price_history_for_page(page)
+
+    listing = page.listings[int(data['row'])]
+    return jsonify({
+        "success": True,
+        "company": listing.grade_company,
+        "grade": listing.grade,
+        "label": listing.grade_label()
+    })
+
+
 @app.route('/api/collection', methods=['GET'])
 def get_collection():
     """Get full collection with calculated prices."""
@@ -339,7 +392,9 @@ def add_to_collection():
         first_ed=data.get('first_ed', 0),
         reverse_holo=data.get('reverse_holo', 0),
         quantity=data.get('quantity', 1),
-        added_at=data.get('added_at')
+        added_at=data.get('added_at'),
+        grade_company=data.get('grade_company', ''),
+        grade=data.get('grade')
     )
 
     # Calculate price for the added item
@@ -347,7 +402,8 @@ def add_to_collection():
     price = 0
     if page:
         price = calculate_collection_price(
-            page, item.condition, item.language, item.first_ed, item.reverse_holo
+            page, item.condition, item.language, item.first_ed, item.reverse_holo,
+            item.grade_company, item.grade
         )
 
     return jsonify({
@@ -371,7 +427,9 @@ def update_collection_item():
         language=data.get('language', 'English'),
         first_ed=data.get('first_ed', 0),
         reverse_holo=data.get('reverse_holo', 0),
-        quantity=data.get('quantity', 1)
+        quantity=data.get('quantity', 1),
+        grade_company=data.get('grade_company', ''),
+        grade=data.get('grade')
     )
 
     return jsonify({"success": success})
@@ -396,7 +454,11 @@ def edit_collection_item():
         new_first_ed=data.get('new_first_ed'),
         new_reverse_holo=data.get('new_reverse_holo'),
         new_quantity=data.get('new_quantity', 1),
-        new_added_at=data.get('new_added_at')
+        new_added_at=data.get('new_added_at'),
+        old_grade_company=data.get('old_grade_company', ''),
+        old_grade=data.get('old_grade'),
+        new_grade_company=data.get('new_grade_company', ''),
+        new_grade=data.get('new_grade')
     )
 
     return jsonify({"success": success})
@@ -415,7 +477,9 @@ def remove_from_collection():
         condition=data.get('condition'),
         language=data.get('language'),
         first_ed=data.get('first_ed'),
-        reverse_holo=data.get('reverse_holo')
+        reverse_holo=data.get('reverse_holo'),
+        grade_company=data.get('grade_company', ''),
+        grade=data.get('grade')
     )
 
     return jsonify({
@@ -554,7 +618,8 @@ def get_collection_for_page(canonical_name):
         price = 0
         if page:
             price = calculate_collection_price(
-                page, item.condition, item.language, item.first_ed, item.reverse_holo
+                page, item.condition, item.language, item.first_ed, item.reverse_holo,
+                item.grade_company, item.grade
             )
         item_dict['calculated_price'] = round(price, 2)
         item_dict['total_value'] = round(price * item.quantity, 2)

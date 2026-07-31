@@ -5,7 +5,33 @@ import time
 import math
 from app.listing import Listing, Seller
 from app.language_libraries import *
+from app.grading_libraries import (COMPANY_LABELS, COMPANY_ORDER,
+                                   format_grade_number, grade_slug)
 from app.config import PAGES_DIR, ARCHIVE_DIR
+
+
+def _grade_compatible(old_listing, new_listing):
+    """Whether two listings' grades allow them to be the same tracked listing.
+
+    Grade belongs in the match key because without it a seller offering a PSA 10
+    and a PSA 9 of one card collapses into a single tracked listing whose price
+    history flips between two unrelated price levels.
+
+    Two cases deliberately match anything:
+    - A manually set grade. The user's correction is authoritative precisely
+      because the comment could not be trusted, so the comment must not decide
+      identity either.
+    - grade_company None, i.e. a listing saved before grading support. Same
+      wildcard first_ed == 2 gets, so existing history is not torn up on the
+      first import after this feature lands.
+    """
+    if old_listing.grade_source == 'manual':
+        return True
+    if old_listing.grade_company is None:
+        return True
+    return (old_listing.grade_company == new_listing.grade_company
+            and old_listing.grade == new_listing.grade)
+
 
 class Page:
         
@@ -22,7 +48,11 @@ class Page:
         self.listings = []
         self.languages = []
         self.only_germany = False
+        # available counts RAW copies only -- a slab is not supply of the card a
+        # buyer of the raw card is shopping for. Graded supply is tracked next to
+        # it so nothing is lost.
         self.available = 0
+        self.available_graded = 0
 
         # these are for plotting the information
         self.xdata = []
@@ -65,6 +95,7 @@ class Page:
             'languages': self.languages,
             'only_germany': self.only_germany,
             'available': self.available,
+            'available_graded': self.available_graded,
             'sold': self.sold,
             'inserted': self.inserted,
             'listings': []
@@ -113,6 +144,7 @@ class Page:
         self.languages = data.get('languages', [])
         self.only_germany = data.get('only_germany', False)
         self.available = data.get('available', 0)
+        self.available_graded = data.get('available_graded', 0)
 
         # Load listings
         self.listings = []
@@ -124,7 +156,9 @@ class Page:
             listing.canonical_name = self.canonical_name
             self.listings.append(listing)
 
-            if not listing.ended:
+            # Graded copies are left out of the page average: a 800 EUR PSA 10
+            # and a 40 EUR raw NM are not two samples of one price.
+            if not listing.ended and not listing.is_graded():
                 prices.append(listing.price)
 
         self.price_average = Page.calculate_price_average_robust(prices)
@@ -176,7 +210,7 @@ class Page:
             listing.import_listing(line)
             listing.canonical_name = self.canonical_name
             self.listings.append(listing)
-            if not listing.ended:
+            if not listing.ended and not listing.is_graded():
                 prices.append(listing.price)
         from watcherbase import watcherbase
         self.price_average = self.calculate_price_average_robust(prices)
@@ -214,8 +248,10 @@ class Page:
             new_listing.comment = page.listings[0].comment
             new_listing.first_ed = page.listings[0].first_ed
             new_listing.reverse_holo = page.listings[0].reverse_holo
+            new_listing.grade_company = page.listings[0].grade_company
+            new_listing.grade = page.listings[0].grade
+            new_listing.grade_source = page.listings[0].grade_source
             new_listing.canonical_name = self.canonical_name
-            self.available += new_listing.quantity
             self.inserted += 1
 
             # check if the listing was there before
@@ -224,7 +260,8 @@ class Page:
                         and listing.language == page.listings[0].language
                         and listing.condition == page.listings[0].condition
                         and (listing.first_ed == page.listings[0].first_ed or listing.first_ed == 2)
-                        and (listing.reverse_holo == page.listings[0].reverse_holo or listing.reverse_holo == 2)):
+                        and (listing.reverse_holo == page.listings[0].reverse_holo or listing.reverse_holo == 2)
+                        and _grade_compatible(listing, page.listings[0])):
                     # we have found an older first date and the listing is not new
                     new_listing.first_date = listing.first_date
                     new_listing.new = False
@@ -243,6 +280,14 @@ class Page:
 
                     # preserve archived status
                     new_listing.archived = listing.archived
+
+                    # A grade the user set by hand outranks whatever this
+                    # import parsed out of the comment -- without carrying it
+                    # over, every import would silently undo the correction.
+                    if listing.grade_source == 'manual':
+                        new_listing.grade_company = listing.grade_company
+                        new_listing.grade = listing.grade
+                        new_listing.grade_source = 'manual'
 
                     # check if the listing had ended before
                     if listing.ended:
@@ -277,6 +322,9 @@ class Page:
             new_listing.new = False
             new_listing.first_ed = self.listings[0].first_ed
             new_listing.reverse_holo = self.listings[0].reverse_holo
+            new_listing.grade_company = self.listings[0].grade_company
+            new_listing.grade = self.listings[0].grade
+            new_listing.grade_source = self.listings[0].grade_source
             new_listing.canonical_name = self.canonical_name
             # preserve archived status
             new_listing.archived = self.listings[0].archived
@@ -311,7 +359,9 @@ class Page:
 
         # Recompute available as true quantity sum, excluding archived and ended
         # (can't do this earlier because archived status isn't known until after matching)
-        self.available = sum(l.quantity for l in self.listings if not l.ended and not l.archived)
+        live = [l for l in self.listings if not l.ended and not l.archived]
+        self.available = sum(l.quantity for l in live if not l.is_graded())
+        self.available_graded = sum(l.quantity for l in live if l.is_graded())
 
         for language in page.languages:
             if language not in self.languages:
@@ -352,6 +402,76 @@ class Page:
             self.save()
             return True
         return False
+
+    def set_listing_grade(self, index, company, grade):
+        """Set a listing's grade by hand and mark it as user-owned.
+
+        ``company=""`` clears the grade, which is how a false positive gets
+        killed (a "Don't expect PSA10" that slipped through, say). The 'manual'
+        source is what makes the change survive the next import.
+        """
+        if not (0 <= index < len(self.listings)):
+            return False
+        listing = self.listings[index]
+        listing.grade_company = company or ""
+        listing.grade = float(grade) if (company and grade is not None) else None
+        listing.grade_source = 'manual'
+        print(f"set_listing_grade | listing {index} -> {listing.grade_label() or 'not graded'}")
+        self.save()
+        return True
+
+    def build_grading_selection(self):
+        """Filter checkboxes for the grades actually present on this page.
+
+        Two groups: one checkbox per grading company (plus "Not graded"), and one
+        per distinct grade number. Mirrors build_country_selection's markup so the
+        existing filter styling applies unchanged.
+        """
+        companies = []
+        grades = []
+        has_raw = False
+        for listing in self.listings:
+            if listing.is_graded():
+                if listing.grade_company not in companies:
+                    companies.append(listing.grade_company)
+                if listing.grade is not None and listing.grade not in grades:
+                    grades.append(listing.grade)
+            else:
+                has_raw = True
+
+        if not companies:
+            return ""
+
+        companies.sort(key=lambda c: COMPANY_ORDER.index(c) if c in COMPANY_ORDER else 99)
+        grades.sort(reverse=True)
+
+        selection = ""
+        for company in companies:
+            value = "grade-" + company.lower()
+            label = COMPANY_LABELS.get(company, company)
+            selection += """<div class="form-check">
+                                <input type="checkbox" id=\"""" + value + """" value=\"""" + value + """" class="grade-checkbox form-check-input mb-1 me-2">
+                                <label for=\"""" + value + """" class="d-inline-flex form-check-label">
+                                    <span>""" + label + """</span>
+                                </label>
+                            </div>"""
+        if has_raw:
+            selection += """<div class="form-check">
+                                <input type="checkbox" id="grade-none" value="grade-none" class="grade-checkbox form-check-input mb-1 me-2">
+                                <label for="grade-none" class="d-inline-flex form-check-label">
+                                    <span>Not graded</span>
+                                </label>
+                            </div>"""
+        selection += """<hr class="my-2">"""
+        for grade in grades:
+            value = "gradeval-" + grade_slug(grade)
+            selection += """<div class="form-check">
+                                <input type="checkbox" id=\"""" + value + """" value=\"""" + value + """" class="gradeval-checkbox form-check-input mb-1 me-2">
+                                <label for=\"""" + value + """" class="d-inline-flex form-check-label">
+                                    <span>Grade """ + format_grade_number(grade) + """</span>
+                                </label>
+                            </div>"""
+        return selection
 
     def build_table(self):
         table = ""

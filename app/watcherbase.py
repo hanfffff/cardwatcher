@@ -231,6 +231,17 @@ class watcherbase():
 
         return candidate_price
 
+    def _excluded_from_raw(listing):
+        """Whether a listing must stay out of the raw-card price pool.
+
+        Archived listings are excluded by user request. Graded listings are
+        excluded because a slab is a different product: a PSA 10 at 800 EUR and a
+        raw NM at 40 EUR are not two samples of one price, and mixing them was
+        producing phantom movers on the dashboard. Graded copies get their own
+        numbers in calculate_graded_buckets.
+        """
+        return listing.archived or listing.is_graded()
+
     def calculate_historical_average(page, days_ago):
         """
         Calculate what the average price would have been X days ago.
@@ -249,8 +260,8 @@ class watcherbase():
 
         historical_prices = []
         for listing in page.listings:
-            # Skip archived listings
-            if listing.archived:
+            # Skip archived and graded listings
+            if watcherbase._excluded_from_raw(listing):
                 continue
 
             try:
@@ -293,7 +304,7 @@ class watcherbase():
 
         historical_prices = []
         for listing in page.listings:
-            if listing.archived:
+            if watcherbase._excluded_from_raw(listing):
                 continue
             try:
                 first_date = float(listing.first_date) if listing.first_date else 0
@@ -329,8 +340,8 @@ class watcherbase():
 
         historical_ended_pairs = []
         for listing in page.listings:
-            # Skip archived listings
-            if listing.archived:
+            # Skip archived and graded listings
+            if watcherbase._excluded_from_raw(listing):
                 continue
 
             # Only consider currently ended listings
@@ -378,8 +389,8 @@ class watcherbase():
         count = 0
 
         for listing in page.listings:
-            # Skip archived listings
-            if listing.archived:
+            # Skip archived and graded listings
+            if watcherbase._excluded_from_raw(listing):
                 continue
 
             try:
@@ -429,8 +440,8 @@ class watcherbase():
         removed = 0
 
         for listing in page.listings:
-            # Skip archived listings
-            if listing.archived:
+            # Skip archived and graded listings
+            if watcherbase._excluded_from_raw(listing):
                 continue
 
             try:
@@ -488,17 +499,38 @@ class watcherbase():
             return sorted_vals[int(k)]
         return sorted_vals[lo] * (hi - k) + sorted_vals[hi] * (k - lo)
 
-    def _listings_at_time(page, at_time):
+    def _grade_selected(listing, grade):
+        """Whether a listing belongs to the requested slice of the market.
+
+        ``grade`` is 'raw' (ungraded only), 'graded' (any slab), a
+        (company, number) pair for one specific slab grade, or None for
+        everything.
+        """
+        if grade is None:
+            return True
+        if grade == 'raw':
+            return not listing.is_graded()
+        if grade == 'graded':
+            return listing.is_graded()
+        company, number = grade
+        return listing.grade_company == company and listing.grade == number
+
+    def _listings_at_time(page, at_time, grade='raw'):
         """Split non-archived listings into (active, sold) at a point in time.
 
         Each entry is (listing, price). When at_time is None the current snapshot
         is used (price = listing.price). Otherwise prices/availability are
         reconstructed for that historical moment, reusing the same availability
         tests as calculate_historical_average / calculate_historical_ended_average.
+
+        ``grade`` selects which slice of the market to report on; it defaults to
+        raw so every existing caller gets ungraded prices. See _grade_selected.
         """
         active, sold = [], []
         for l in page.listings:
             if l.archived:
+                continue
+            if not watcherbase._grade_selected(l, grade):
                 continue
 
             if at_time is None:
@@ -558,10 +590,11 @@ class watcherbase():
                 return lang
         return max(pool, key=lambda k: pool[k])
 
-    def calculate_market_prices(page, at_time=None, lang=_UNSET):
+    def calculate_market_prices(page, at_time=None, lang=_UNSET, grade='raw'):
         """Representative market price computed three ways.
 
-        Returns {'blend', 'transaction', 'floor', 'language', 'n_sold', 'n_ask'}.
+        Returns {'blend', 'transaction', 'floor', 'language', 'n_sold', 'n_ask',
+        'basis'}.
         - transaction: time-weighted, IQR-filtered average of realized sales.
         - floor: low band (FLOOR_PERCENTILE) of outlier-filtered current asks.
         - blend: weighted mix of transaction and floor (the all-round number).
@@ -573,8 +606,17 @@ class watcherbase():
         otherwise the dominant language flips as the reconstructed supply
         changes and the floor/blend/sold numbers jump between price levels of
         different languages.
+
+        ``grade`` defaults to raw. For a card only ever offered as slabs that
+        would leave nothing to price, so the whole pool is used instead and
+        'basis' reports 'all' rather than 'raw' -- better an honestly labelled
+        graded price than a silent zero.
         """
-        active, sold = watcherbase._listings_at_time(page, at_time)
+        basis = 'raw' if grade == 'raw' else 'selected'
+        active, sold = watcherbase._listings_at_time(page, at_time, grade)
+        if grade == 'raw' and not active and not sold:
+            active, sold = watcherbase._listings_at_time(page, at_time, None)
+            basis = 'all'
         if lang is watcherbase._UNSET:
             lang = (watcherbase.dominant_language([l for l, _ in active])
                     or watcherbase.dominant_language([l for l, _ in sold]))
@@ -645,7 +687,114 @@ class watcherbase():
             'language': lang,
             'n_sold': len(sold_f),
             'n_ask': len(active_f),
+            'basis': basis,
         }
+
+    def calculate_graded_buckets(page, at_time=None, max_sold=8, lang=None):
+        """Per-(company, grade) value for the graded copies of this card.
+
+        Keyed by the display label ("PSA 10", "BGS 9.5"), because a PSA 10 and a
+        CGC 10 are not interchangeable products and do not trade at the same
+        price. Each bucket carries:
+
+            company, grade      the pair, split out for filtering
+            floor               lowest current ask
+            available           item count on offer (quantities, like page.available)
+            n_ask               how many listings that is
+            sold                recent realized prices, newest first: [[price, ts]]
+            n_sold              how many ended listings exist in total
+            last_sold           the most recent one, or 0
+
+        Deliberately no IQR filter, no percentile band and no time-weighted
+        average: a graded bucket is typically one to three listings, where those
+        tools describe noise rather than a market. What is meaningful for a slab
+        is the ask floor and the prices copies actually went away at, so that is
+        what is reported and the caller can judge the sample size from n_ask /
+        n_sold. Note "sold" means the listing ended -- it may also have been
+        delisted or edited, the same caveat the raw ended-average carries.
+
+        ``lang`` restricts the buckets to one language. Left off by default: a
+        slab pool split by language is usually one listing or none, and the point
+        of the card page is to show every slab on offer. Pass it when comparing
+        against a language-filtered raw price (see calculate_graded_premium).
+        """
+        active, sold = watcherbase._listings_at_time(page, at_time, 'graded')
+        if lang is not None:
+            active = [(l, p) for (l, p) in active if l.language == lang]
+            sold = [(l, p) for (l, p) in sold if l.language == lang]
+
+        buckets = {}
+
+        def bucket_for(listing):
+            label = listing.grade_label()
+            if label not in buckets:
+                buckets[label] = {
+                    'company': listing.grade_company,
+                    'grade': listing.grade,
+                    'floor': 0.0,
+                    'available': 0,
+                    'n_ask': 0,
+                    'sold': [],
+                    'n_sold': 0,
+                    'last_sold': 0.0,
+                }
+            return buckets[label]
+
+        for listing, price in active:
+            bucket = bucket_for(listing)
+            bucket['n_ask'] += 1
+            bucket['available'] += listing.quantity
+            if bucket['floor'] == 0.0 or price < bucket['floor']:
+                bucket['floor'] = price
+
+        for listing, price in sold:
+            bucket = bucket_for(listing)
+            bucket['n_sold'] += 1
+            try:
+                ts = float(listing.date) if listing.date else 0.0
+            except (ValueError, TypeError):
+                ts = 0.0
+            bucket['sold'].append([round(price, 2), ts])
+
+        for bucket in buckets.values():
+            bucket['floor'] = round(bucket['floor'], 2)
+            bucket['sold'].sort(key=lambda entry: entry[1], reverse=True)
+            bucket['last_sold'] = bucket['sold'][0][0] if bucket['sold'] else 0.0
+            del bucket['sold'][max_sold:]
+
+        return buckets
+
+    def calculate_graded_premium(page, market=None):
+        """What the cheapest top-grade slab costs as a multiple of a raw copy.
+
+        e.g. 12.5 when the top grade can be had for 500 EUR against a 40 EUR raw
+        floor. 0 when either side is missing.
+
+        "Top grade" is the highest grade with a live ask, and where several
+        companies offer it the cheapest one wins -- taking any other bucket at
+        that grade would report the premium of whichever grader happens to sort
+        first, which produced premiums below 1.0x on real pages.
+
+        Both sides are restricted to the raw market's language. Without that the
+        comparison silently crosses markets: one real page prices its raw floor
+        off two English full-set listings at 2100 EUR while every slab on it is
+        Portuguese or German, which read as a 0.12x "premium". Returns 0 when the
+        card has no slab in that language, which is honest -- there is nothing to
+        compare.
+        """
+        market = watcherbase.calculate_market_prices(page) if market is None else market
+
+        raw_floor = market.get('floor', 0) or 0
+        if raw_floor <= 0 or market.get('basis') != 'raw':
+            return 0.0
+
+        buckets = watcherbase.calculate_graded_buckets(page, lang=market.get('language'))
+        priced = [b for b in buckets.values() if b['floor'] > 0 and b['grade'] is not None]
+        if not priced:
+            return 0.0
+        top_grade = max(b['grade'] for b in priced)
+        top_floor = min(b['floor'] for b in priced if b['grade'] == top_grade)
+        return round(top_floor / raw_floor, 2)
 
     def calculate_market_price_series(page, max_days=365):
         """Daily history of the three market prices for the page's price graph.
@@ -720,28 +869,37 @@ class watcherbase():
             '6m': 180
         }
 
-        # Calculate current average (all active listings, excluding archived)
-        current_prices = [l.price for l in page.listings if not l.ended and not l.archived]
+        # Everything below describes the RAW card. Graded copies are excluded by
+        # _excluded_from_raw and reported separately in 'graded' at the bottom.
+        current_prices = [l.price for l in page.listings
+                          if not l.ended and not watcherbase._excluded_from_raw(l)]
         current_avg = Page.calculate_price_average_robust(current_prices) if current_prices else 0
         current_min = min(current_prices) if current_prices else 0
 
-        # Sum quantities of current available listings (excluding archived)
-        current_available = sum(l.quantity for l in page.listings if not l.ended and not l.archived)
+        # Sum quantities of current available listings
+        current_available = sum(l.quantity for l in page.listings
+                                if not l.ended and not watcherbase._excluded_from_raw(l))
 
         # Calculate current ended average using time-weighted approach
-        # Recent sales have more influence than older sales (excluding archived)
+        # Recent sales have more influence than older sales
         ended_price_date_pairs = []
         for l in page.listings:
-            if l.ended and not l.archived:
+            if l.ended and not watcherbase._excluded_from_raw(l):
                 ended_price_date_pairs.append((l.price, l.date))
         current_ended_avg = watcherbase.calculate_price_average_time_weighted(ended_price_date_pairs) if ended_price_date_pairs else 0
+
+        market = watcherbase.calculate_market_prices(page)
+        graded = watcherbase.calculate_graded_buckets(page)
 
         result = {
             'current_avg': round(current_avg, 2),
             'current_ended_avg': round(current_ended_avg, 2),
             'current_available': current_available,
             'current_min': round(current_min, 2),
-            'market': watcherbase.calculate_market_prices(page),
+            'market': market,
+            'current_available_graded': sum(b['available'] for b in graded.values()),
+            'graded': graded,
+            'graded_premium': watcherbase.calculate_graded_premium(page, market=market),
         }
 
         for period_name, days in periods.items():

@@ -1,5 +1,6 @@
 from datetime import datetime
 from app.language_libraries import *
+from app.grading_libraries import COMPANY_COLORS, format_grade, grade_slug, parse_grade
 import math
 import time
 import json
@@ -71,7 +72,44 @@ class Listing:
         self.reverse_holo = 2
         # whether this listing is archived (excluded from calculations but still visible)
         self.archived = False
-    
+        # the grading company, read out of the comment. Tri-state like first_ed:
+        # None = never looked at (page predates grading support), "" = not
+        # graded, "PSA"/"BGS"/... = graded by that company.
+        self.grade_company = None
+        # the numeric grade (10.0, 9.5, ...) or None when not graded
+        self.grade = None
+        # where the grade came from: None, 'auto' (parsed) or 'manual' (the user
+        # corrected it, so re-imports must not overwrite it)
+        self.grade_source = None
+
+    def is_graded(self):
+        """True when this listing is a professionally graded slab.
+
+        Unknown (None) counts as not graded: a page saved before grading support
+        has never been looked at, and treating it as graded would pull raw cards
+        out of the raw price pool.
+        """
+        return bool(self.grade_company)
+
+    def grade_label(self):
+        """``PSA 10`` / ``BGS 9.5``, or '' when not graded."""
+        return format_grade(self.grade_company, self.grade)
+
+    def apply_parsed_grade(self):
+        """Read the grade out of this listing's comment.
+
+        Leaves a manually set grade alone -- the user's correction outranks
+        whatever the seller wrote. Returns True when a review-worthy comment was
+        seen (see grading_libraries.parse_grade).
+        """
+        if self.grade_source == 'manual':
+            return False
+        company, grade, needs_review = parse_grade(self.comment)
+        self.grade_company = company
+        self.grade = grade
+        self.grade_source = 'auto'
+        return needs_review
+
     def __str__(self):
         output = ("{" + \
                     self.card + \
@@ -168,7 +206,10 @@ class Listing:
             'quantity_change': self.quantity_change,
             'first_ed': self.first_ed,
             'reverse_holo': self.reverse_holo,
-            'archived': self.archived
+            'archived': self.archived,
+            'grade_company': self.grade_company,
+            'grade': self.grade,
+            'grade_source': self.grade_source
         }
 
     def from_json(self, data):
@@ -216,6 +257,13 @@ class Listing:
         self.first_ed = data.get('first_ed', 2)
         self.reverse_holo = data.get('reverse_holo', 2)
         self.archived = data.get('archived', False)
+        # Defaults to None, not "": a page written before grading support has
+        # never been checked, which is a different thing from "checked, no grade"
+        # and is what lets update_page() treat old listings as a match wildcard.
+        self.grade_company = data.get('grade_company', None)
+        grade_val = data.get('grade', None)
+        self.grade = float(grade_val) if grade_val is not None else None
+        self.grade_source = data.get('grade_source', None)
 
     def parse_from_row(self,row):
         self.seller.name = row.find('span',attrs={'class':'seller-name'}).find('a').text
@@ -243,6 +291,9 @@ class Listing:
             self.reverse_holo = 1
         else:
             self.reverse_holo = 0
+        # CardMarket has no field for professional grading; sellers write it into
+        # the comment, so that is where it has to come from.
+        self.apply_parsed_grade()
 
     def build_row(self):
         date = self.date if self.ended else self.first_date
@@ -333,6 +384,21 @@ class Listing:
             first_edition_hider = "is"
             first_edition_marker = """
             <span style="display: inline-block; width: 16px; height: 16px; background-image:url('static/Blanko/ssMain2.png'); background-position: -112px -16px;" data-original-title="First Edition" data-bs-html="true" data-bs-placement="bottom" class="icon st_SpecialIcon mr-1" aria-label="First Edition" data-bs-original-title="First Edition"></span>"""
+        # The grade badge goes in the comment column rather than next to the
+        # first-ed/reverse-holo icons: product-attributes is a fixed 6.5rem and
+        # already holds four items, and "PSA 10" is text, not a 16px sprite.
+        grade_marker = ""
+        grade_hider = "none"
+        grade_value_hider = "none"
+        if self.is_graded():
+            grade_hider = self.grade_company.lower()
+            grade_value_hider = grade_slug(self.grade)
+            grade_label = self.grade_label()
+            grade_marker = ("<span class=\"grade-badge me-1\" style=\"background:" +
+                            COMPANY_COLORS.get(self.grade_company, "#6c757d") +
+                            ";\" title=\"Graded " + grade_label + "\">" +
+                            grade_label + "</span>")
+
         reverse_holo_marker = ""
         reverse_holo_hider = "none"
         if self.reverse_holo == 1:
@@ -347,8 +413,12 @@ class Listing:
                             " condition-" + self.condition.lower() + "-val" +\
                             " firsted-" + first_edition_hider +\
                             " reverseholo-" + reverse_holo_hider +\
+                            " grade-" + grade_hider +\
+                            " gradeval-" + grade_value_hider +\
                             row_extra_style +\
                             " row g-0 article-row\"" + \
+                    " data-grade-company=\"" + (self.grade_company or "") + "\"" + \
+                    " data-grade=\"" + (grade_slug(self.grade) if self.is_graded() else "") + "\"" + \
                     " data-first-date=\"" + first_date_str + "\"" + \
                     " data-is-ended=\"" + str(self.ended).lower() + "\"" + \
                     " data-quantity=\"" + str(display_quantity) + "\"" + \
@@ -398,7 +468,8 @@ class Listing:
                                                 reverse_holo_marker + \
                                             "</div>" + \
                                             "<div class=\"product-comments me-1 col\">" + \
-                                                "<div class=\"w-100\">" + \
+                                                "<div class=\"w-100 d-flex align-items-center\">" + \
+                                                    grade_marker + \
                                                     "<span class=\"d-block text-truncate text-muted fst-italic small\" title=\"" + \
                                                         self.comment.replace('"', '&quot;') + \
                                                     "\">" + \
@@ -432,6 +503,12 @@ class Listing:
                                 "</div>" + \
                             "</div>" + \
                             "<div class=\"col-auto d-flex align-items-center\">" +\
+                                    "<a href=\"#\" class=\"edit-grade-btn me-1\" title=\"Set grade\"" +\
+                                    " data-row=\"" + str(self.row_number) + "\"" +\
+                                    " data-company=\"" + (self.grade_company or "") + "\"" +\
+                                    " data-grade=\"" + (str(self.grade) if self.grade is not None else "") + "\">" +\
+                                    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#666\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z\"/></svg>" +\
+                                    "</a>" +\
                                     ("<a href=\"?name="+self.canonical_name+".json&unarchive="+str(self.row_number)+"\" title=\"Unarchive\">" +\
                                     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#28a745\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z\"/><line x1=\"12\" y1=\"11\" x2=\"12\" y2=\"17\"/><polyline points=\"9 14 12 11 15 14\"/></svg>" +\
                                     "</a>"

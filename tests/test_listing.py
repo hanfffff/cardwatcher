@@ -109,3 +109,75 @@ def test_to_json_from_json_round_trip():
     assert restored.quantity_change == -1
     assert restored.previous_prices == [(40.0, 1680000000.0), (45.0, 1685000000.0)]
     assert restored.previous_quantities == [(3, 1680000000.0)]
+
+
+# --- grading -----------------------------------------------------------------
+
+def test_grade_round_trips_through_json():
+    original = make_listing(seller="alice", price=800.0, comment="PSA 10",
+                            grade_company="PSA", grade=10.0, grade_source="manual")
+
+    restored = Listing()
+    restored.from_json(original.to_json())
+
+    assert restored.grade_company == "PSA"
+    assert restored.grade == 10.0
+    assert restored.grade_source == "manual"
+    assert restored.is_graded() is True
+    assert restored.grade_label() == "PSA 10"
+
+
+def test_page_json_without_grading_loads_as_never_inspected():
+    """None, not "": a legacy page has not been checked, which is not the same
+    as checked-and-ungraded. update_page relies on the difference."""
+    restored = Listing()
+    restored.from_json({'card': 'x', 'seller': {'name': 'a', 'country': ''}})
+
+    assert restored.grade_company is None
+    assert restored.grade is None
+    assert restored.grade_source is None
+    # Unknown still counts as not graded, so raw prices keep working.
+    assert restored.is_graded() is False
+
+
+def test_apply_parsed_grade_reads_the_comment():
+    listing = make_listing(comment="[PSA 10.0] fast shipping", grade_source=None)
+    listing.apply_parsed_grade()
+
+    assert (listing.grade_company, listing.grade) == ("PSA", 10.0)
+    assert listing.grade_source == "auto"
+
+
+def test_apply_parsed_grade_leaves_a_manual_grade_alone():
+    listing = make_listing(comment="PSA 10", grade_company="BGS", grade=9.5,
+                           grade_source="manual")
+    listing.apply_parsed_grade()
+
+    assert (listing.grade_company, listing.grade) == ("BGS", 9.5)
+
+
+def test_build_row_marks_and_classifies_a_slab():
+    listing = make_listing(seller="alice", price=800.0, comment="PSA 10",
+                           grade_company="PSA", grade=10.0)
+    listing.canonical_name = "Test_Card"
+    listing.row_number = 0
+
+    html = listing.build_row()
+
+    assert "grade-psa" in html
+    assert "gradeval-10" in html
+    assert 'data-grade-company="PSA"' in html
+    assert ">PSA 10</span>" in html
+    assert "edit-grade-btn" in html
+
+
+def test_build_row_marks_a_raw_listing_as_ungraded():
+    listing = make_listing(seller="alice", price=10.0)
+    listing.canonical_name = "Test_Card"
+    listing.row_number = 0
+
+    html = listing.build_row()
+
+    assert "grade-none" in html
+    assert "gradeval-none" in html
+    assert "grade-badge" not in html

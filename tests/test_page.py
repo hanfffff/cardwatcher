@@ -105,3 +105,153 @@ def test_update_page_marks_unchanged_listing_not_new():
     assert old.listings[0].price_is_new is False
     assert old.sold == 0
     assert old.inserted == 0
+
+
+# --- update_page matching: grading ------------------------------------------
+
+def test_grade_separates_two_slabs_from_one_seller():
+    """A seller's PSA 10 and PSA 9 are two listings, not one flip-flopping one.
+
+    Without grade in the match key these collapse into a single tracked listing
+    whose price history jumps between two unrelated price levels.
+    """
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.listings = [
+        make_listing(seller="alice", price=800.0, date=100.0, first_date=100.0,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="alice", price=300.0, date=100.0, first_date=100.0,
+                     grade_company="PSA", grade=9.0),
+    ]
+
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=850.0, date=200.0, first_date=200.0,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="alice", price=310.0, date=200.0, first_date=200.0,
+                     grade_company="PSA", grade=9.0),
+    ], price_average=0.0)
+
+    old.update_page(new)
+
+    by_grade = {l.grade: l for l in old.listings}
+    assert len(old.listings) == 2
+    # Each kept its own history rather than being matched to the other.
+    assert by_grade[10.0].price == 850.0
+    assert by_grade[10.0].previous_prices == [(800.0, 100.0)]
+    assert by_grade[9.0].price == 310.0
+    assert by_grade[9.0].previous_prices == [(300.0, 100.0)]
+    assert old.sold == 0
+
+
+def test_legacy_listing_without_grade_still_matches():
+    """Pages saved before grading support must not all end and re-list at once."""
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    legacy = make_listing(seller="alice", price=10.0, date=100.0, first_date=100.0)
+    legacy.grade_company = None       # never inspected
+    legacy.grade = None
+    legacy.grade_source = None
+    old.listings = [legacy]
+
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, date=200.0, first_date=200.0,
+                     grade_company="PSA", grade=10.0),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert len(old.listings) == 1
+    assert old.listings[0].new is False       # matched, not treated as new
+    assert old.listings[0].first_date == 100.0
+    assert old.sold == 0
+    # The freshly parsed grade is adopted.
+    assert old.listings[0].grade_company == "PSA"
+
+
+def test_manual_grade_survives_reimport():
+    """A hand-set grade outranks what the next import parses from the comment."""
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.listings = [make_listing(seller="alice", price=10.0, date=100.0, first_date=100.0,
+                                 comment="Don't expect PSA10",
+                                 grade_company="PSA", grade=9.0, grade_source="manual")]
+
+    # The importer parsed the comment differently (here: as ungraded).
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, date=200.0, first_date=200.0,
+                     comment="Don't expect PSA10"),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert len(old.listings) == 1
+    listing = old.listings[0]
+    assert listing.new is False
+    assert (listing.grade_company, listing.grade) == ("PSA", 9.0)
+    assert listing.grade_source == "manual"
+
+
+def test_available_splits_raw_from_graded():
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.listings = []
+
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, quantity=3, date=200.0, first_date=200.0),
+        make_listing(seller="bob", price=800.0, quantity=2, date=200.0, first_date=200.0,
+                     grade_company="PSA", grade=10.0),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert old.available == 3          # raw items only
+    assert old.available_graded == 2
+
+
+def test_build_grading_selection_lists_only_present_grades():
+    page = Page()
+    page.listings = [
+        make_listing(seller="alice", grade_company="PSA", grade=10.0),
+        make_listing(seller="bob", grade_company="BGS", grade=9.5),
+        make_listing(seller="carol"),
+    ]
+
+    html = page.build_grading_selection()
+
+    assert 'value="grade-psa"' in html
+    assert 'value="grade-bgs"' in html
+    assert 'value="grade-none"' in html          # raw copies exist
+    assert 'value="gradeval-10"' in html
+    assert 'value="gradeval-9-5"' in html        # dot is not CSS-safe
+    assert 'value="grade-cgc"' not in html       # not on this card
+
+
+def test_build_grading_selection_empty_without_slabs():
+    page = Page()
+    page.listings = [make_listing(seller="alice")]
+    assert page.build_grading_selection() == ""
+
+
+def test_set_listing_grade_marks_it_manual(tmp_path, monkeypatch):
+    import app.page as page_module
+    monkeypatch.setattr(page_module, "PAGES_DIR", str(tmp_path))
+    monkeypatch.setattr(page_module, "ARCHIVE_DIR", str(tmp_path))
+
+    page = Page()
+    page.canonical_name = "Test_Card"
+    page.listings = [make_listing(seller="alice")]
+
+    assert page.set_listing_grade(0, "PSA", 10.0) is True
+    assert (page.listings[0].grade_company, page.listings[0].grade) == ("PSA", 10.0)
+    assert page.listings[0].grade_source == "manual"
+
+    # Clearing it is how a false positive gets killed.
+    assert page.set_listing_grade(0, "", None) is True
+    assert page.listings[0].is_graded() is False
+    assert page.listings[0].grade_source == "manual"
+
+    assert page.set_listing_grade(99, "PSA", 10.0) is False

@@ -200,3 +200,117 @@ def test_calculate_all_period_averages_shape():
         assert period in result
         assert "market" in result[period]
         assert "blend" in result[period]["market"]
+
+
+# --- raw vs graded split ------------------------------------------------------
+
+def _mixed_page():
+    """A card with cheap raw copies and expensive slabs, all English NM."""
+    now = time.time()
+    return _FakePage([
+        make_listing(seller="a", price=40.0, quantity=2, date=now, first_date=now - 86400),
+        make_listing(seller="b", price=45.0, quantity=1, date=now, first_date=now - 86400),
+        make_listing(seller="c", price=50.0, quantity=1, date=now, first_date=now - 86400),
+        make_listing(seller="d", price=55.0, quantity=1, date=now, first_date=now - 86400),
+        make_listing(seller="e", price=800.0, quantity=1, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="f", price=850.0, quantity=3, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="g", price=300.0, quantity=1, date=now, first_date=now - 86400,
+                     grade_company="BGS", grade=9.5),
+    ])
+
+
+def test_graded_asks_do_not_move_the_raw_floor():
+    page = _mixed_page()
+
+    raw = watcherbase.calculate_market_prices(page)
+    mixed = watcherbase.calculate_market_prices(page, grade=None)
+
+    assert raw['basis'] == 'raw'
+    assert raw['n_ask'] == 4                 # slabs excluded
+    assert raw['floor'] <= 55.0              # priced off the raw copies alone
+    assert mixed['floor'] > raw['floor']     # the old, polluted number
+
+
+def test_graded_only_card_falls_back_and_says_so():
+    """Better an honestly labelled graded price than a silent zero."""
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=800.0, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=10.0),
+    ])
+
+    market = watcherbase.calculate_market_prices(page)
+
+    assert market['basis'] == 'all'
+    assert market['floor'] == 800.0
+
+
+def test_graded_buckets_split_by_company_and_grade():
+    page = _mixed_page()
+
+    buckets = watcherbase.calculate_graded_buckets(page)
+
+    assert set(buckets) == {"PSA 10", "BGS 9.5"}
+    # Floor is the plain minimum ask: a two-listing pool has no meaningful
+    # percentile band.
+    assert buckets["PSA 10"]['floor'] == 800.0
+    assert buckets["PSA 10"]['n_ask'] == 2
+    assert buckets["PSA 10"]['available'] == 4      # quantities, not listings
+    assert buckets["BGS 9.5"]['floor'] == 300.0
+
+
+def test_graded_buckets_report_realized_prices():
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=900.0, quantity=0, date=now - 86400,
+                     first_date=now - 200000, ended=True,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="b", price=880.0, quantity=0, date=now - 172800,
+                     first_date=now - 300000, ended=True,
+                     grade_company="PSA", grade=10.0),
+    ])
+
+    bucket = watcherbase.calculate_graded_buckets(page)["PSA 10"]
+
+    assert bucket['n_sold'] == 2
+    assert bucket['last_sold'] == 900.0             # newest first
+    assert [price for price, _ in bucket['sold']] == [900.0, 880.0]
+
+
+def test_graded_premium_is_the_cheapest_top_grade_over_raw():
+    page = _mixed_page()
+
+    premium = watcherbase.calculate_graded_premium(page)
+
+    raw_floor = watcherbase.calculate_market_prices(page)['floor']
+    # Top grade on offer is 10; cheapest ask at that grade is 800.
+    assert premium == round(800.0 / raw_floor, 2)
+
+
+def test_graded_premium_needs_a_slab_in_the_raw_market_language():
+    """Comparing an English raw floor to a Japanese slab is not a premium."""
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=40.0, date=now, first_date=now - 86400),
+        make_listing(seller="b", price=45.0, date=now, first_date=now - 86400),
+        make_listing(seller="c", language="Japanese", price=800.0, date=now,
+                     first_date=now - 86400, grade_company="PSA", grade=10.0),
+    ])
+
+    assert watcherbase.calculate_graded_premium(page) == 0.0
+
+
+def test_period_metrics_report_graded_alongside_raw():
+    page = _mixed_page()
+
+    metrics = watcherbase.calculate_all_period_averages(page)
+
+    assert metrics['current_available'] == 5        # raw quantities only
+    assert metrics['current_available_graded'] == 5
+    assert set(metrics['graded']) == {"PSA 10", "BGS 9.5"}
+    assert metrics['graded_premium'] > 1
+    # The headline raw numbers must not see the slabs.
+    assert metrics['current_min'] == 40.0
+    assert metrics['current_avg'] < 100

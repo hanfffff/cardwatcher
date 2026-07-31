@@ -30,8 +30,14 @@ def listing_rows_html():
 def make_listing(seller="seller", country="Item location: Germany", language="English",
                  condition="NM", price=10.0, quantity=1, date=0.0, ended=False,
                  first_date=0.0, first_ed=0, reverse_holo=0, archived=False,
-                 previous_prices=None, comment=""):
-    """Build a Listing with sensible defaults for tests."""
+                 previous_prices=None, comment="",
+                 grade_company="", grade=None, grade_source="auto"):
+    """Build a Listing with sensible defaults for tests.
+
+    Defaults to an explicitly ungraded listing (grade_company "", source 'auto'),
+    i.e. a comment that has been checked and holds no grade -- not the None
+    "never looked at" state that only legacy page files carry.
+    """
     l = Listing()
     l.seller = Seller()
     l.seller.name = seller
@@ -48,4 +54,7 @@ def make_listing(seller="seller", country="Item location: Germany", language="En
     l.archived = archived
     l.comment = comment
     l.previous_prices = previous_prices if previous_prices is not None else []
+    l.grade_company = grade_company
+    l.grade = grade
+    l.grade_source = grade_source
     return l

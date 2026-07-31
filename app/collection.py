@@ -14,7 +14,8 @@ class CollectionItem:
     """Represents a single card in the user's collection."""
 
     def __init__(self, canonical_name, condition="NM", language="English",
-                 first_ed=0, reverse_holo=0, quantity=1, added_at=None):
+                 first_ed=0, reverse_holo=0, quantity=1, added_at=None,
+                 grade_company="", grade=None):
         self.canonical_name = canonical_name
         self.condition = condition
         self.language = language
@@ -22,6 +23,18 @@ class CollectionItem:
         self.reverse_holo = reverse_holo  # 0=no (unchecked), 2=yes (checked)
         self.quantity = quantity
         self.added_at = added_at or time.time()
+        self.grade_company = grade_company  # "" = raw, "PSA"/"BGS"/... = slabbed
+        self.grade = grade                  # float or None
+
+    def identity(self):
+        """The attribute tuple that makes this entry distinct in the collection.
+
+        Grade is part of it because a PSA 10 and a raw copy of one card are two
+        different holdings worth wildly different amounts -- merging them would
+        make the collection value meaningless.
+        """
+        return (self.canonical_name, self.condition, self.language,
+                self.first_ed, self.reverse_holo, self.grade_company, self.grade)
 
     def to_dict(self):
         return {
@@ -31,7 +44,9 @@ class CollectionItem:
             "first_ed": self.first_ed,
             "reverse_holo": self.reverse_holo,
             "quantity": self.quantity,
-            "added_at": self.added_at
+            "added_at": self.added_at,
+            "grade_company": self.grade_company,
+            "grade": self.grade
         }
 
     @staticmethod
@@ -46,7 +61,20 @@ class CollectionItem:
         item.reverse_holo = data.get("reverse_holo", 0)
         item.quantity = data.get("quantity", 1)
         item.added_at = data.get("added_at")  # Can be None for legacy items
+        # Entries saved before grading support are raw: unlike a listing, a
+        # collection entry was typed in by the user, so there is nothing
+        # un-inspected about it.
+        item.grade_company = data.get("grade_company", "") or ""
+        grade = data.get("grade")
+        item.grade = float(grade) if grade is not None else None
         return item
+
+
+def identity_of(canonical_name, condition, language, first_ed, reverse_holo,
+                grade_company="", grade=None):
+    """Build the same tuple CollectionItem.identity() returns, for lookups."""
+    return (canonical_name, condition, language, first_ed, reverse_holo,
+            grade_company or "", grade)
 
 
 class Collection:
@@ -100,7 +128,8 @@ class Collection:
             json.dump(data, f, indent=2)
 
     def add_item(self, canonical_name, condition="NM", language="English",
-                 first_ed=0, reverse_holo=0, quantity=1, added_at=None):
+                 first_ed=0, reverse_holo=0, quantity=1, added_at=None,
+                 grade_company="", grade=None):
         """Add or update an item in the collection."""
         # Invalidate acquisition history if item has older added_at
         if added_at:
@@ -109,13 +138,12 @@ class Collection:
         # Always invalidate portfolio history (item is now "always owned")
         self._invalidate_portfolio_history()
 
+        target = identity_of(canonical_name, condition, language, first_ed,
+                             reverse_holo, grade_company, grade)
+
         # Check if item with same attributes exists
         for item in self.items:
-            if (item.canonical_name == canonical_name and
-                item.condition == condition and
-                item.language == language and
-                item.first_ed == first_ed and
-                item.reverse_holo == reverse_holo):
+            if item.identity() == target:
                 # Update quantity
                 item.quantity += quantity
                 # Keep the earlier added_at date if a new one is provided
@@ -132,7 +160,9 @@ class Collection:
             first_ed=first_ed,
             reverse_holo=reverse_holo,
             quantity=quantity,
-            added_at=added_at
+            added_at=added_at,
+            grade_company=grade_company or "",
+            grade=grade
         )
         self.items.append(item)
         self.save()
@@ -170,14 +200,13 @@ class Collection:
         self.portfolio_history = {}
         self.portfolio_backfilled_to = None
 
-    def update_item(self, canonical_name, condition, language, first_ed, reverse_holo, quantity):
+    def update_item(self, canonical_name, condition, language, first_ed, reverse_holo,
+                    quantity, grade_company="", grade=None):
         """Update quantity of an existing item."""
+        target = identity_of(canonical_name, condition, language, first_ed,
+                             reverse_holo, grade_company, grade)
         for item in self.items:
-            if (item.canonical_name == canonical_name and
-                item.condition == condition and
-                item.language == language and
-                item.first_ed == first_ed and
-                item.reverse_holo == reverse_holo):
+            if item.identity() == target:
                 if quantity <= 0:
                     self.items.remove(item)
                     self._invalidate_portfolio_history()
@@ -189,19 +218,22 @@ class Collection:
         return False
 
     def edit_item(self, canonical_name, old_condition, old_language, old_first_ed, old_reverse_holo,
-                  new_condition, new_language, new_first_ed, new_reverse_holo, new_quantity, new_added_at=None):
+                  new_condition, new_language, new_first_ed, new_reverse_holo, new_quantity,
+                  new_added_at=None, old_grade_company="", old_grade=None,
+                  new_grade_company="", new_grade=None):
         """
         Edit an item's attributes. Since attributes are the item's identity,
         this removes the old item and creates a new one.
         """
+        old_target = identity_of(canonical_name, old_condition, old_language,
+                                 old_first_ed, old_reverse_holo, old_grade_company, old_grade)
+        new_target = identity_of(canonical_name, new_condition, new_language,
+                                 new_first_ed, new_reverse_holo, new_grade_company, new_grade)
+
         # Find the old item
         old_item = None
         for item in self.items:
-            if (item.canonical_name == canonical_name and
-                item.condition == old_condition and
-                item.language == old_language and
-                item.first_ed == old_first_ed and
-                item.reverse_holo == old_reverse_holo):
+            if item.identity() == old_target:
                 old_item = item
                 break
 
@@ -216,11 +248,7 @@ class Collection:
         for item in self.items:
             if item == old_item:
                 continue
-            if (item.canonical_name == canonical_name and
-                item.condition == new_condition and
-                item.language == new_language and
-                item.first_ed == new_first_ed and
-                item.reverse_holo == new_reverse_holo):
+            if item.identity() == new_target:
                 # Merge into existing item
                 item.quantity += new_quantity
                 if new_added_at and (not item.added_at or new_added_at < item.added_at):
@@ -239,6 +267,8 @@ class Collection:
         old_item.reverse_holo = new_reverse_holo
         old_item.quantity = new_quantity
         old_item.added_at = new_added_at
+        old_item.grade_company = new_grade_company or ""
+        old_item.grade = new_grade
 
         self._invalidate_portfolio_history()
         if new_added_at:
@@ -247,9 +277,11 @@ class Collection:
         return True
 
     def remove_item(self, canonical_name, condition=None, language=None,
-                    first_ed=None, reverse_holo=None):
+                    first_ed=None, reverse_holo=None, grade_company="", grade=None):
         """Remove item(s) from collection."""
         removed = []
+        target = identity_of(canonical_name, condition, language, first_ed,
+                             reverse_holo, grade_company, grade)
         for item in self.items[:]:
             if item.canonical_name != canonical_name:
                 continue
@@ -258,10 +290,7 @@ class Collection:
                 self.items.remove(item)
                 removed.append(item)
             # Otherwise, match specific attributes
-            elif (item.condition == condition and
-                  item.language == language and
-                  item.first_ed == first_ed and
-                  item.reverse_holo == reverse_holo):
+            elif item.identity() == target:
                 self.items.remove(item)
                 removed.append(item)
 
@@ -293,7 +322,27 @@ class Collection:
         return result
 
 
-def calculate_collection_price(page, condition, language, first_ed, reverse_holo):
+# How far back a sold listing still counts as a price signal. Raw supply turns
+# over constantly; graded supply does not (see calculate_collection_price).
+RAW_ENDED_WINDOW_DAYS = 7
+GRADED_ENDED_WINDOW_DAYS = 90
+
+
+def _grade_matches(listing, grade_company, grade):
+    """Whether a listing is the same product as a held item, grading-wise.
+
+    Exact both ways. A PSA 10 must never be priced off a raw copy (it is worth a
+    multiple of it), and a raw copy must never be priced off a slab. This is
+    enforced even in the relaxed passes below, which loosen condition and
+    first_ed but never this.
+    """
+    if grade_company:
+        return listing.grade_company == grade_company and listing.grade == grade
+    return not listing.is_graded()
+
+
+def calculate_collection_price(page, condition, language, first_ed, reverse_holo,
+                               grade_company="", grade=None):
     """
     Calculate realistic market price for a card with specific attributes.
 
@@ -309,16 +358,26 @@ def calculate_collection_price(page, condition, language, first_ed, reverse_holo
         language: Card language
         first_ed: First edition flag (0=no/unchecked, 2=yes/checked)
         reverse_holo: Reverse holo flag (0=no/unchecked, 2=yes/checked)
+        grade_company: Grading company ("" for a raw card)
+        grade: Numeric grade, or None for a raw card
 
     Returns:
         float: Calculated price, or 0 if no data
     """
-    # Exclude archived listings from calculations
-    available = [l for l in page.listings if not l.ended and not l.archived]
-    # Only consider recently ended listings (within 7 days) to avoid misleading old prices
-    one_week_ago = time.time() - 7 * 24 * 3600
+    # Exclude archived listings, and anything that is not the same product as
+    # what is held: pricing a slab off raw listings (or vice versa) is the single
+    # biggest way this number can be wrong.
+    available = [l for l in page.listings if not l.ended and not l.archived
+                 and _grade_matches(l, grade_company, grade)]
+    # Only consider recently ended listings, to avoid misleading old prices. The
+    # window is far wider for slabs: a card has dozens of raw listings turning
+    # over constantly, but often a single PSA 10 that sells once a quarter, and a
+    # 7-day window would leave nearly every graded holding priced at 0.
+    window_days = GRADED_ENDED_WINDOW_DAYS if grade_company else RAW_ENDED_WINDOW_DAYS
+    cutoff = time.time() - window_days * 24 * 3600
     ended = [l for l in page.listings if l.ended and not l.archived
-             and l.date and float(l.date) >= one_week_ago]
+             and l.date and float(l.date) >= cutoff
+             and _grade_matches(l, grade_company, grade)]
 
     # Condition grades from best to worst
     condition_grades = ['MT', 'NM', 'EX', 'GD', 'LP', 'PL', 'PO']
@@ -436,7 +495,9 @@ def calculate_collection_value(collection, pages_cache=None):
             item.condition,
             item.language,
             item.first_ed,
-            item.reverse_holo
+            item.reverse_holo,
+            item.grade_company,
+            item.grade
         )
 
         item_value = price * item.quantity
@@ -447,7 +508,8 @@ def calculate_collection_value(collection, pages_cache=None):
     return total_value, item_count, items_with_prices
 
 
-def calculate_historical_collection_price(page, condition, language, first_ed, reverse_holo, target_time):
+def calculate_historical_collection_price(page, condition, language, first_ed, reverse_holo,
+                                          target_time, grade_company="", grade=None):
     """
     Calculate collection price for a card at a specific historical point in time.
 
@@ -462,6 +524,8 @@ def calculate_historical_collection_price(page, condition, language, first_ed, r
         first_ed: First edition flag (0=no/unchecked, 2=yes/checked)
         reverse_holo: Reverse holo flag (0=no/unchecked, 2=yes/checked)
         target_time: Unix timestamp for the historical point
+        grade_company: Grading company ("" for a raw card)
+        grade: Numeric grade, or None for a raw card
 
     Returns:
         float: Calculated price at that time, or 0 if no data
@@ -531,11 +595,13 @@ def calculate_historical_collection_price(page, condition, language, first_ed, r
             return False
         return True
 
-    # Filter to listings that existed at target_time (excluding archived)
-    available_at_time = [l for l in page.listings if listing_existed_at_time(l, target_time) and not l.ended and not l.archived]
+    # Filter to listings that existed at target_time (excluding archived, and
+    # anything of a different grading -- same rule as calculate_collection_price)
+    graded_like = [l for l in page.listings if _grade_matches(l, grade_company, grade)]
+    available_at_time = [l for l in graded_like if listing_existed_at_time(l, target_time) and not l.ended and not l.archived]
     # For ended listings, check if they were available at target_time (ended after target)
     ended_at_time = []
-    for l in page.listings:
+    for l in graded_like:
         if l.ended and not l.archived:
             try:
                 last_seen = float(l.date) if l.date else 0
@@ -628,7 +694,9 @@ def calculate_historical_collection_value(collection, target_date, pages_cache=N
             item.language,
             item.first_ed,
             item.reverse_holo,
-            target_time
+            target_time,
+            item.grade_company,
+            item.grade
         )
 
         item_value = price * item.quantity

@@ -35,6 +35,36 @@ CardWatcher
 .hidden-reverse {
 	display:none !important;
 }
+.hidden-grade {
+	display:none !important;
+}
+.hidden-gradeval {
+	display:none !important;
+}
+
+/* Grading marker on a listing row. Text rather than a sprite: there is no flag
+   sheet for grading companies, and "PSA 10" has to be readable at a glance. It
+   sits in the comment column because product-attributes is a fixed 6.5rem. */
+.grade-badge {
+	display: inline-block;
+	flex: 0 0 auto;
+	padding: 0 5px;
+	border-radius: 3px;
+	color: #fff;
+	font-size: 11px;
+	font-weight: bold;
+	line-height: 16px;
+	white-space: nowrap;
+}
+.grade-editor {
+	display: flex;
+	gap: 4px;
+	align-items: center;
+}
+.grade-editor select {
+	font-size: 12px;
+	padding: 1px 4px;
+}
 
 /* The card-art panel (#image) has a fixed 376px height from CardMarket's CSS.
    In the flex layout the raw image isn't bound to it and spills past its border,
@@ -307,6 +337,18 @@ CardWatcher
 								<label for="collectionAddedAt" class="form-label">Date Added</label>
 								<input type="date" class="form-control" id="collectionAddedAt">
 							</div>
+							<!-- Grading. A slab is a separate holding from the raw
+							     card and is valued only against other slabs of the
+							     same company and grade. -->
+							<div class="col-md-6">
+								<label for="collectionGradeCompany" class="form-label">Grading</label>
+								<div class="d-flex gap-2">
+									<select class="form-select" id="collectionGradeCompany">
+										<option value="">Not graded</option>
+									</select>
+									<select class="form-select" id="collectionGrade" style="max-width: 6rem;" disabled></select>
+								</div>
+							</div>
 							<!-- Row 3: Submit button -->
 							<div class="col-12">
 								<button type="submit" class="btn btn-success" id="addToCollectionBtn">
@@ -550,6 +592,26 @@ CardWatcher
 			</div>
 		</div>
 	</div>
+
+	<!-- Filter for professional grading. Only rendered when this card actually
+	     has graded listings (see Page.build_grading_selection). -->
+	{% if grading_selection %}
+	<div class="accordion-item">
+		<div class="accordion-header">
+			<div style="padding:10px">
+					<span class="filterName text-nowrap me-1">Grading</span>
+			</div>
+		</div>
+		<div class="accordion-collapse collapse show">
+			<div class="item-body-wrapper">
+				<div class="filter-box">
+					{{ grading_selection|safe }}
+					<button type="button" class="btn deselect-all-grading btn-link btn-sm btn-slim">Deselect all</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	{% endif %}
 
 </div>
 </form>
@@ -874,6 +936,70 @@ CardWatcher
 		generate_Graph();
 		generate_Graph();
 	});
+	// Grading Checkboxes ---------------------------------------------------------------------------
+	// The filter groups above each repeat this same show/hide logic inline. The
+	// two grading groups share one implementation instead of adding two more
+	// copies of it; the existing groups are left as they are.
+	function setupRowFilter(selector, hiddenClass) {
+		var checkboxes = document.querySelectorAll(selector);
+		checkboxes.forEach(function(checkbox) {
+			checkbox.addEventListener('change', function() {
+				var allUnchecked = true;
+				var allWereUnchecked = true;
+				var value = this.value;
+				var checked = this.checked;
+				var self = this;
+				checkboxes.forEach(function(other) {
+					if (other.checked) {
+						allUnchecked = false;
+						if (other.value != value) {
+							allWereUnchecked = false;
+						}
+					}
+				});
+				if (allUnchecked) {
+					// Nothing selected means no filter, so show every row again.
+					document.querySelectorAll('[id^="articleRow"]').forEach(function(element) {
+						element.classList.remove(hiddenClass);
+					});
+				} else {
+					if (allWereUnchecked) {
+						// First box ticked: hide everything, then reveal the match.
+						document.querySelectorAll('[id^="articleRow"]').forEach(function(element) {
+							element.classList.add(hiddenClass);
+						});
+					}
+					document.querySelectorAll('.' + value).forEach(function(element) {
+						if (checked) {
+							element.classList.remove(hiddenClass);
+						} else {
+							element.classList.add(hiddenClass);
+						}
+					});
+				}
+				self.disabled = true;
+				setTimeout(function(){ self.disabled = false; }, 100);
+				generate_Graph();
+			});
+		});
+		return checkboxes;
+	}
+	var grade_checkboxes = setupRowFilter('.grade-checkbox', 'hidden-grade');
+	var gradeval_checkboxes = setupRowFilter('.gradeval-checkbox', 'hidden-gradeval');
+	// The Grading panel is only rendered for cards that have graded listings.
+	var deselectGrading = document.querySelector('.deselect-all-grading');
+	if (deselectGrading) {
+		deselectGrading.addEventListener('click', function() {
+			[[grade_checkboxes, 'hidden-grade'], [gradeval_checkboxes, 'hidden-gradeval']]
+				.forEach(function(group) {
+					group[0].forEach(function(checkbox) { checkbox.checked = false; });
+					document.querySelectorAll('[id^="articleRow"]').forEach(function(element) {
+						element.classList.remove(group[1]);
+					});
+				});
+			generate_Graph();
+		});
+	}
 	// Condition Checkboxes -------------------------------------------------------------------------
 	var condition_checkboxes = document.querySelectorAll('.condition-checkbox');
 	condition_checkboxes.forEach(function(checkbox) {
@@ -1522,6 +1648,33 @@ CardWatcher
 	}
 	populateLanguageDropdown();
 
+	// Grading options, shared by the add form and the per-item edit rows.
+	var COLLECTION_GRADE_COMPANIES = {{ grading_companies|tojson }};
+	// Graders issue whole and half grades only, best first.
+	var COLLECTION_GRADE_VALUES = [10, 9.5, 9, 8.5, 8, 7.5, 7, 6.5, 6, 5.5, 5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1];
+
+	(function populateGradeDropdowns() {
+		var companySelect = document.getElementById('collectionGradeCompany');
+		var gradeSelect = document.getElementById('collectionGrade');
+		COLLECTION_GRADE_COMPANIES.forEach(function(company) {
+			var option = document.createElement('option');
+			option.value = company[0];
+			option.textContent = company[1];
+			companySelect.appendChild(option);
+		});
+		COLLECTION_GRADE_VALUES.forEach(function(value) {
+			var option = document.createElement('option');
+			option.value = value;
+			option.textContent = value;
+			gradeSelect.appendChild(option);
+		});
+		// A grade without a grader is meaningless, so it stays locked until one
+		// is picked.
+		companySelect.addEventListener('change', function() {
+			gradeSelect.disabled = this.value === '';
+		});
+	})();
+
 	// Set default date to today
 	document.getElementById('collectionAddedAt').value = new Date().toISOString().split('T')[0];
 
@@ -1543,6 +1696,11 @@ CardWatcher
 					var props = [];
 					if (item.first_ed === 2) props.push('1st Ed');
 					if (item.reverse_holo === 2) props.push('Rev. Holo');
+					// A slab is a different holding from the raw card, worth a
+					// multiple of it, so it is called out first.
+					if (item.grade_company) {
+						props.unshift(item.grade_company + ' ' + item.grade);
+					}
 
 					// Format added_at date for display and input
 					var addedDate = '-';
@@ -1563,8 +1721,9 @@ CardWatcher
 					html += '<td>' + item.calculated_price.toFixed(2) + '€</td>';
 					html += '<td><strong>' + item.total_value.toFixed(2) + '€</strong></td>';
 					html += '<td class="text-nowrap">';
-					html += '<button class="btn btn-sm btn-outline-primary edit-collection-btn me-1" data-index="' + index + '" data-condition="' + item.condition + '" data-language="' + item.language + '" data-firsted="' + item.first_ed + '" data-reverse="' + item.reverse_holo + '" data-qty="' + item.quantity + '" data-added="' + (item.added_at || '') + '" title="Edit">✎</button>';
-					html += '<button class="btn btn-sm btn-outline-danger remove-collection-btn" data-condition="' + item.condition + '" data-language="' + item.language + '" data-firsted="' + item.first_ed + '" data-reverse="' + item.reverse_holo + '" title="Remove">×</button>';
+					var gradeAttrs = ' data-gradecompany="' + (item.grade_company || '') + '" data-grade="' + (item.grade === null ? '' : item.grade) + '"';
+					html += '<button class="btn btn-sm btn-outline-primary edit-collection-btn me-1" data-index="' + index + '" data-condition="' + item.condition + '" data-language="' + item.language + '" data-firsted="' + item.first_ed + '" data-reverse="' + item.reverse_holo + '" data-qty="' + item.quantity + '" data-added="' + (item.added_at || '') + '"' + gradeAttrs + ' title="Edit">✎</button>';
+					html += '<button class="btn btn-sm btn-outline-danger remove-collection-btn" data-condition="' + item.condition + '" data-language="' + item.language + '" data-firsted="' + item.first_ed + '" data-reverse="' + item.reverse_holo + '"' + gradeAttrs + ' title="Remove">×</button>';
 					html += '</td>';
 					html += '</tr>';
 
@@ -1587,8 +1746,19 @@ CardWatcher
 					html += '<div class="form-check"><input class="form-check-input edit-firsted" type="checkbox"' + (item.first_ed === 2 ? ' checked' : '') + '><label class="form-check-label small">1st Ed</label></div>';
 					html += '<div class="form-check"><input class="form-check-input edit-reverse" type="checkbox"' + (item.reverse_holo === 2 ? ' checked' : '') + '><label class="form-check-label small">Rev Holo</label></div>';
 					html += '</div></div>';
+					html += '<div class="col-auto"><label class="form-label mb-0 small">Grading</label><div class="d-flex gap-1">';
+					html += '<select class="form-select form-select-sm edit-gradecompany" style="width: 8rem;"><option value="">Not graded</option>';
+					COLLECTION_GRADE_COMPANIES.forEach(function(c) {
+						html += '<option value="' + c[0] + '"' + (c[0] === item.grade_company ? ' selected' : '') + '>' + c[1] + '</option>';
+					});
+					html += '</select>';
+					html += '<select class="form-select form-select-sm edit-grade" style="width: 5rem;"' + (item.grade_company ? '' : ' disabled') + '>';
+					COLLECTION_GRADE_VALUES.forEach(function(g) {
+						html += '<option value="' + g + '"' + (g === item.grade ? ' selected' : '') + '>' + g + '</option>';
+					});
+					html += '</select></div></div>';
 					html += '<div class="col-auto"><label class="form-label mb-0 small">Added</label><input type="date" class="form-control form-control-sm edit-added" value="' + addedDateInput + '"></div>';
-					html += '<div class="col-auto"><button class="btn btn-sm btn-success save-edit-btn" data-index="' + index + '" data-old-condition="' + item.condition + '" data-old-language="' + item.language + '" data-old-firsted="' + item.first_ed + '" data-old-reverse="' + item.reverse_holo + '">Save</button></div>';
+					html += '<div class="col-auto"><button class="btn btn-sm btn-success save-edit-btn" data-index="' + index + '" data-old-condition="' + item.condition + '" data-old-language="' + item.language + '" data-old-firsted="' + item.first_ed + '" data-old-reverse="' + item.reverse_holo + '" data-old-gradecompany="' + (item.grade_company || '') + '" data-old-grade="' + (item.grade === null ? '' : item.grade) + '">Save</button></div>';
 					html += '<div class="col-auto"><button class="btn btn-sm btn-secondary cancel-edit-btn" data-index="' + index + '">Cancel</button></div>';
 					html += '</div>';
 					html += '</td>';
@@ -1628,6 +1798,8 @@ CardWatcher
 						var newReverse = editRow.querySelector('.edit-reverse').checked ? 2 : 0;
 						var newAddedInput = editRow.querySelector('.edit-added').value;
 						var newAddedAt = newAddedInput ? new Date(newAddedInput + 'T12:00:00').getTime() / 1000 : null;
+						var newGradeCompany = editRow.querySelector('.edit-gradecompany').value;
+						var newGrade = newGradeCompany ? parseFloat(editRow.querySelector('.edit-grade').value) : null;
 
 						editCollectionItem(
 							this.dataset.oldCondition,
@@ -1639,8 +1811,19 @@ CardWatcher
 							newFirstEd,
 							newReverse,
 							newQty,
-							newAddedAt
+							newAddedAt,
+							this.dataset.oldGradecompany || '',
+							this.dataset.oldGrade ? parseFloat(this.dataset.oldGrade) : null,
+							newGradeCompany,
+							newGrade
 						);
+					});
+				});
+
+				// Keep the grade dropdown in step with the company dropdown.
+				document.querySelectorAll('.edit-gradecompany').forEach(function(select) {
+					select.addEventListener('change', function() {
+						this.parentElement.querySelector('.edit-grade').disabled = this.value === '';
 					});
 				});
 
@@ -1651,7 +1834,9 @@ CardWatcher
 							this.dataset.condition,
 							this.dataset.language,
 							parseInt(this.dataset.firsted),
-							parseInt(this.dataset.reverse)
+							parseInt(this.dataset.reverse),
+							this.dataset.gradecompany || '',
+							this.dataset.grade ? parseFloat(this.dataset.grade) : null
 						);
 					});
 				});
@@ -1688,7 +1873,7 @@ CardWatcher
 		});
 	}
 
-	function editCollectionItem(oldCondition, oldLanguage, oldFirstEd, oldReverse, newCondition, newLanguage, newFirstEd, newReverse, newQuantity, newAddedAt) {
+	function editCollectionItem(oldCondition, oldLanguage, oldFirstEd, oldReverse, newCondition, newLanguage, newFirstEd, newReverse, newQuantity, newAddedAt, oldGradeCompany, oldGrade, newGradeCompany, newGrade) {
 		fetch('/api/collection/edit', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -1703,7 +1888,11 @@ CardWatcher
 				new_first_ed: newFirstEd,
 				new_reverse_holo: newReverse,
 				new_quantity: newQuantity,
-				new_added_at: newAddedAt
+				new_added_at: newAddedAt,
+				old_grade_company: oldGradeCompany || '',
+				old_grade: oldGrade === undefined ? null : oldGrade,
+				new_grade_company: newGradeCompany || '',
+				new_grade: newGrade === undefined ? null : newGrade
 			})
 		})
 		.then(response => response.json())
@@ -1719,7 +1908,7 @@ CardWatcher
 		});
 	}
 
-	function removeFromCollection(condition, language, firstEd, reverseHolo) {
+	function removeFromCollection(condition, language, firstEd, reverseHolo, gradeCompany, grade) {
 		if (!confirm('Remove this item from your collection?')) return;
 
 		fetch('/api/collection/remove', {
@@ -1730,7 +1919,9 @@ CardWatcher
 				condition: condition,
 				language: language,
 				first_ed: firstEd,
-				reverse_holo: reverseHolo
+				reverse_holo: reverseHolo,
+				grade_company: gradeCompany || '',
+				grade: grade === undefined ? null : grade
 			})
 		})
 		.then(response => response.json())
@@ -1764,6 +1955,8 @@ CardWatcher
 		var reverseHolo = document.getElementById('collectionReverseHolo').checked ? 2 : 0;
 		var addedAtInput = document.getElementById('collectionAddedAt').value;
 		var addedAt = addedAtInput ? new Date(addedAtInput + 'T12:00:00').getTime() / 1000 : null;
+		var gradeCompany = document.getElementById('collectionGradeCompany').value;
+		var grade = gradeCompany ? parseFloat(document.getElementById('collectionGrade').value) : null;
 
 		fetch('/api/collection/add', {
 			method: 'POST',
@@ -1775,7 +1968,9 @@ CardWatcher
 				condition: condition,
 				first_ed: firstEd,
 				reverse_holo: reverseHolo,
-				added_at: addedAt
+				added_at: addedAt,
+				grade_company: gradeCompany,
+				grade: grade
 			})
 		})
 		.then(response => response.json())
@@ -1790,6 +1985,8 @@ CardWatcher
 				document.getElementById('collectionFirstEd').checked = false;
 				document.getElementById('collectionReverseHolo').checked = false;
 				document.getElementById('collectionAddedAt').value = new Date().toISOString().split('T')[0];
+				document.getElementById('collectionGradeCompany').value = '';
+				document.getElementById('collectionGrade').disabled = true;
 				// Reload collection items
 				loadCollectionItems();
 				// Update tab badge
@@ -1875,6 +2072,106 @@ CardWatcher
 			resetButton();
 		});
 	});
+
+// ---------------------------------------------------------------------------
+// Grade editing
+//
+// The grade is parsed out of the seller's free-text comment, so it is wrong now
+// and then -- a missed slab, or a "potential PSA 10" read as a real one. This
+// lets it be corrected in place. The server marks the result as manual, which is
+// what stops the next import from parsing over the correction.
+// ---------------------------------------------------------------------------
+(function() {
+	var GRADE_COMPANIES = {{ grading_companies|tojson }};
+	// Graders issue whole and half grades only, best first.
+	var GRADE_VALUES = [10, 9.5, 9, 8.5, 8, 7.5, 7, 6.5, 6, 5.5, 5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1];
+	var PAGE_NAME = {{ canonical_name|tojson }};
+
+	function buildEditor(link) {
+		var editor = document.createElement('span');
+		editor.className = 'grade-editor';
+
+		var companySelect = document.createElement('select');
+		companySelect.innerHTML = '<option value="">Not graded</option>' +
+			GRADE_COMPANIES.map(function(c) {
+				return '<option value="' + c[0] + '">' + c[1] + '</option>';
+			}).join('');
+		companySelect.value = link.dataset.company || '';
+
+		var gradeSelect = document.createElement('select');
+		gradeSelect.innerHTML = GRADE_VALUES.map(function(g) {
+			return '<option value="' + g + '">' + g + '</option>';
+		}).join('');
+		if (link.dataset.grade) {
+			gradeSelect.value = parseFloat(link.dataset.grade);
+		}
+		gradeSelect.disabled = companySelect.value === '';
+		companySelect.addEventListener('change', function() {
+			gradeSelect.disabled = this.value === '';
+		});
+
+		var save = document.createElement('button');
+		save.type = 'button';
+		save.className = 'btn btn-sm btn-success py-0 px-1';
+		save.textContent = '✓';
+
+		var cancel = document.createElement('button');
+		cancel.type = 'button';
+		cancel.className = 'btn btn-sm btn-outline-secondary py-0 px-1';
+		cancel.textContent = '×';
+
+		editor.appendChild(companySelect);
+		editor.appendChild(gradeSelect);
+		editor.appendChild(save);
+		editor.appendChild(cancel);
+
+		function close() {
+			editor.replaceWith(link);
+		}
+		cancel.addEventListener('click', close);
+
+		save.addEventListener('click', function() {
+			var company = companySelect.value;
+			save.disabled = true;
+			fetch('/api/listing/grade', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({
+					canonical_name: PAGE_NAME,
+					row: parseInt(link.dataset.row, 10),
+					company: company,
+					grade: company ? parseFloat(gradeSelect.value) : null
+				})
+			})
+			.then(function(response) { return response.json(); })
+			.then(function(data) {
+				if (!data.success) {
+					alert('Could not set grade: ' + (data.message || 'unknown error'));
+					save.disabled = false;
+					return;
+				}
+				// The grade feeds the raw/graded price split and the row's filter
+				// classes, so a reload is the honest way to show the new state.
+				window.location.reload();
+			})
+			.catch(function(error) {
+				alert('Error: ' + error);
+				save.disabled = false;
+			});
+		});
+
+		return editor;
+	}
+
+	document.addEventListener('click', function(event) {
+		var link = event.target.closest('.edit-grade-btn');
+		if (!link) {
+			return;
+		}
+		event.preventDefault();
+		link.replaceWith(buildEditor(link));
+	});
+})();
 </script>
 </body>
 </html>
