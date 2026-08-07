@@ -50,6 +50,30 @@ class watcherbase():
     # Sentinel distinguishing "language not supplied" from an explicit None.
     _UNSET = object()
 
+    # Accepted extensions for a downloaded page: our own downloader writes
+    # .htm, a browser "Save page as..." writes .html.
+    PAGE_EXTENSIONS = (".htm", ".html")
+
+    # Suffixes browsers give the companion assets folder; localized per UI
+    # language ("-Dateien" on a German Chrome, "_files" on an English one).
+    ASSET_FOLDER_SUFFIXES = ("-Dateien", "_files")
+
+    def is_page_file(file_name):
+        return file_name.lower().endswith(watcherbase.PAGE_EXTENSIONS)
+
+    def get_page_stem(file_name):
+        """Strip the page extension, so the assets folder can be derived."""
+        lowered = file_name.lower()
+        for ext in watcherbase.PAGE_EXTENSIONS:
+            if lowered.endswith(ext):
+                return file_name[:-len(ext)]
+        return file_name
+
+    def get_asset_folders(file_name):
+        """Candidate names of the saved-assets folder belonging to a page."""
+        stem = watcherbase.get_page_stem(file_name)
+        return [stem + suffix for suffix in watcherbase.ASSET_FOLDER_SUFFIXES]
+
     def get_name_from_address(address):
         return address[30:].replace('/','_')
 
@@ -59,11 +83,15 @@ class watcherbase():
     def delete_download(file_name):
         print("delete_download | deleting html " + file_name)
         os.remove(os.path.join(DOWNLOADS_DIR, file_name))
-        print("delete_download | deleting folder " + file_name[:-4] + "-Dateien")
-        try:
-            shutil.rmtree(os.path.join(DOWNLOADS_DIR, file_name[:-4]+"-Dateien"))
-        except:
-            print("delete_download | no folder to delete")
+        for assets in watcherbase.get_asset_folders(file_name):
+            path = os.path.join(DOWNLOADS_DIR, assets)
+            if not os.path.isdir(path):
+                continue
+            print("delete_download | deleting folder " + assets)
+            try:
+                shutil.rmtree(path)
+            except Exception as e:
+                print("delete_download | could not delete " + assets + ": " + str(e))
 
     def move_to_failed(file_name):
         """Quarantine a download that raised during import into downloads/failed/.
@@ -79,13 +107,13 @@ class watcherbase():
             shutil.move(os.path.join(DOWNLOADS_DIR, file_name), dest)
             print("move_to_failed | quarantined " + file_name)
             # Move the saved-assets folder alongside it, if present.
-            assets = file_name[:-4] + "-Dateien"
-            assets_src = os.path.join(DOWNLOADS_DIR, assets)
-            if os.path.isdir(assets_src):
-                assets_dest = os.path.join(FAILED_DIR, assets)
-                if os.path.exists(assets_dest):
-                    shutil.rmtree(assets_dest)
-                shutil.move(assets_src, assets_dest)
+            for assets in watcherbase.get_asset_folders(file_name):
+                assets_src = os.path.join(DOWNLOADS_DIR, assets)
+                if os.path.isdir(assets_src):
+                    assets_dest = os.path.join(FAILED_DIR, assets)
+                    if os.path.exists(assets_dest):
+                        shutil.rmtree(assets_dest)
+                    shutil.move(assets_src, assets_dest)
         except Exception as e:
             print("move_to_failed | ERROR quarantining " + file_name + ": " + str(e))
 
@@ -1201,7 +1229,7 @@ class watcherbase():
             print("watcherbase | no downloads folder found")
             return report
         file_list = os.listdir(DOWNLOADS_DIR)
-        file_info_list = [(file_name, os.path.getmtime(os.path.join(DOWNLOADS_DIR, file_name))) for file_name in file_list if file_name.lower().endswith(".htm")]
+        file_info_list = [(file_name, os.path.getmtime(os.path.join(DOWNLOADS_DIR, file_name))) for file_name in file_list if watcherbase.is_page_file(file_name) and os.path.isfile(os.path.join(DOWNLOADS_DIR, file_name))]
         sorted_file_info_list = sorted(file_info_list, key=lambda x: x[1])
         for file_name,timestamp in sorted_file_info_list:
             print("import_all_pages | importing " + file_name)

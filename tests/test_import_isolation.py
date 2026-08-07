@@ -75,6 +75,79 @@ def test_import_all_pages_quarantines_failing_file(tmp_path, monkeypatch):
     assert os.path.exists(changes / "price_history.json")
 
 
+def test_import_all_pages_picks_up_html_and_htm(tmp_path, monkeypatch):
+    """A browser "Save page as..." writes .html, our downloader writes .htm."""
+    downloads = tmp_path / "downloads"
+    changes = tmp_path / "changes"
+    downloads.mkdir()
+    changes.mkdir()
+
+    for name in ("saved.html", "downloaded.htm", "notes.txt"):
+        (downloads / name).write_text("<html></html>", encoding="utf-8")
+    # A directory must never be treated as a page, whatever it is named.
+    (downloads / "stale.htm").mkdir()
+
+    monkeypatch.setattr(wb, "DOWNLOADS_DIR", str(downloads))
+    monkeypatch.setattr(wb, "CHANGES_DIR", str(changes))
+
+    seen = []
+
+    def fake_import_one(file_name, timestamp, price_history, report):
+        seen.append(file_name)
+        return "imported"
+
+    monkeypatch.setattr(watcherbase, "_import_one_file", fake_import_one)
+
+    report = watcherbase.import_all_pages()
+
+    assert sorted(seen) == ["downloaded.htm", "saved.html"]
+    assert report["imported"] == 2
+    assert report["failed"] == []
+
+
+def test_get_asset_folders_handles_both_extensions():
+    assert watcherbase.get_page_stem("123.html") == "123"
+    assert watcherbase.get_page_stem("1_Yamato.htm") == "1_Yamato"
+    # Unknown extension is left alone rather than silently truncated.
+    assert watcherbase.get_page_stem("notes.txt") == "notes.txt"
+    assert watcherbase.get_asset_folders("123.html") == ["123-Dateien", "123_files"]
+
+
+def test_move_to_failed_moves_english_assets_folder(tmp_path, monkeypatch):
+    """English Chrome names the assets folder <stem>_files, not <stem>-Dateien."""
+    downloads = tmp_path / "downloads"
+    failed = downloads / "failed"
+    downloads.mkdir()
+    (downloads / "123.html").write_text("x", encoding="utf-8")
+    assets = downloads / "123_files"
+    assets.mkdir()
+    (assets / "img.jpg").write_text("y", encoding="utf-8")
+
+    monkeypatch.setattr(wb, "DOWNLOADS_DIR", str(downloads))
+    monkeypatch.setattr(wb, "FAILED_DIR", str(failed))
+
+    watcherbase.move_to_failed("123.html")
+
+    assert os.path.exists(failed / "123.html")
+    assert not os.path.exists(downloads / "123.html")
+    assert os.path.exists(failed / "123_files" / "img.jpg")
+
+
+def test_delete_download_removes_html_and_assets(tmp_path, monkeypatch):
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / "123.html").write_text("x", encoding="utf-8")
+    (downloads / "123_files").mkdir()
+    (downloads / "123_files" / "img.jpg").write_text("y", encoding="utf-8")
+
+    monkeypatch.setattr(wb, "DOWNLOADS_DIR", str(downloads))
+
+    watcherbase.delete_download("123.html")
+
+    assert not os.path.exists(downloads / "123.html")
+    assert not os.path.exists(downloads / "123_files")
+
+
 def test_import_all_pages_no_downloads_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(wb, "DOWNLOADS_DIR", str(tmp_path / "missing"))
     report = watcherbase.import_all_pages()
