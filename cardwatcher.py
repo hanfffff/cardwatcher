@@ -47,6 +47,7 @@ from app.collection import (
     load_pages_for_collection
 )
 from app.sync import sync_manager
+from app.rename import rename_page
 from app.config import PAGES_DIR, ARCHIVE_DIR, IMAGES_DIR, CHANGES_DIR, DOWNLOADS_DIR, get_setting, load_settings
 from app.scheduler import AutoRefreshScheduler, schedule_status
 
@@ -354,6 +355,21 @@ def set_listing_grade():
         "grade": listing.grade,
         "label": listing.grade_label()
     })
+
+
+@app.route('/api/page/rename', methods=['POST'])
+def rename_page_route():
+    """Point a tracked card at a new CardMarket URL after the product moved.
+
+    POST rather than a query-param link like archive because it carries typed
+    user input. The whole identity moves (page file, image, metrics, collection
+    entries), so the caller has to reload under the returned page name.
+    """
+    data = request.get_json(silent=True) or {}
+    if 'page_name' not in data or 'url' not in data:
+        return jsonify({"success": False, "message": "Missing page_name or url"})
+
+    return jsonify(rename_page(data['page_name'], data['url']))
 
 
 @app.route('/api/collection', methods=['GET'])

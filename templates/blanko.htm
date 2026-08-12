@@ -177,10 +177,27 @@ CardWatcher
 			<span id="downloadBtnText">Download</span>
 			<span id="downloadSpinner" class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
 		</button>
+		<button id="relinkBtn" type="button" class="btn btn-sm btn-outline-secondary" style="white-space: nowrap;" title="CardMarket moved this product? Point this card at its new URL">
+			Change Link
+		</button>
 		<a href="/?name={{ page_name }}&archive=toggle" class="btn btn-sm {% if is_archived %}btn-success{% else %}btn-secondary{% endif %}" style="white-space: nowrap;" title="{% if is_archived %}Unarchive this page{% else %}Archive this page{% endif %}">
 			{% if is_archived %}Unarchive{% else %}Archive{% endif %}
 		</a>
 	</div>
+</div>
+
+<!-- Repoint this card at a new CardMarket URL. Hidden until "Change Link" is
+     pressed: it is a rare, identity-changing action, not a normal control. -->
+<div id="relinkPanel" class="d-none mb-3">
+	<label for="relinkInput" class="form-label mb-1 small text-muted">
+		New CardMarket URL for this card &mdash; the tracked history, image and collection entries move with it.
+	</label>
+	<div class="input-group input-group-sm">
+		<input type="text" id="relinkInput" class="form-control" value="{{ cardmarket_link }}" spellcheck="false">
+		<button type="button" id="relinkSave" class="btn btn-primary">Save</button>
+		<button type="button" id="relinkCancel" class="btn btn-outline-secondary">Cancel</button>
+	</div>
+	<div id="relinkError" class="d-none small mt-1" style="color:#b00;"></div>
 </div>
 
 <div id="mainContent" class="d-flex flex-wrap justify-content-between" style="margin-bottom: 66.55px; padding-bottom: 5rem;">
@@ -2072,6 +2089,82 @@ CardWatcher
 			resetButton();
 		});
 	});
+
+// ---------------------------------------------------------------------------
+// Change link
+//
+// CardMarket sometimes moves a product to a new URL. The URL is this card's
+// identity, so downloading it under the new address would start an empty second
+// history; this migrates the existing one instead. The page name changes, hence
+// the redirect rather than a reload.
+// ---------------------------------------------------------------------------
+(function() {
+	var btn    = document.getElementById('relinkBtn');
+	var panel  = document.getElementById('relinkPanel');
+	var input  = document.getElementById('relinkInput');
+	var save   = document.getElementById('relinkSave');
+	var cancel = document.getElementById('relinkCancel');
+	var error  = document.getElementById('relinkError');
+
+	function showError(message) {
+		error.textContent = message;
+		error.classList.remove('d-none');
+	}
+
+	btn.addEventListener('click', function() {
+		panel.classList.toggle('d-none');
+		if (!panel.classList.contains('d-none')) {
+			input.focus();
+			input.select();
+		}
+	});
+
+	cancel.addEventListener('click', function() {
+		panel.classList.add('d-none');
+		error.classList.add('d-none');
+		input.value = {{ cardmarket_link|tojson }};
+	});
+
+	input.addEventListener('keydown', function(event) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			save.click();
+		}
+	});
+
+	save.addEventListener('click', function() {
+		error.classList.add('d-none');
+		save.disabled = true;
+		save.textContent = 'Saving...';
+
+		function reset() {
+			save.disabled = false;
+			save.textContent = 'Save';
+		}
+
+		fetch('/api/page/rename', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({
+				page_name: {{ page_name|tojson }},
+				url: input.value
+			})
+		})
+		.then(function(response) { return response.json(); })
+		.then(function(data) {
+			if (!data.success) {
+				showError(data.message || 'unknown error');
+				reset();
+				return;
+			}
+			window.location.href = '/?name=' + encodeURIComponent(data.new_page_name);
+		})
+		.catch(function(err) {
+			showError('Error: ' + err);
+			reset();
+		});
+	});
+})();
 
 // ---------------------------------------------------------------------------
 // Grade editing

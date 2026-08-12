@@ -93,7 +93,7 @@ The **price chart** shows the card's value four ways:
 - **Sold** (red) — a time-weighted average of prices that actually sold, with recent sales weighted more heavily.
 - **Blend** (green) — the headline "market price": a weighted mix of **Sold** and **Floor**, meant to be the single most representative number.
 
-Below the chart, the page lists every listing (seller, price, condition; rows color-coded for new / sold / quantity change), per-listing price history, country/language filters, and per-card **Download** / **Archive** buttons. A second **availability chart** shows existing vs. new stock and sold per day/week/month with a drainage % line (aggregated to weeks beyond 1 month, months beyond 6). Both charts share the 1M / 3M / 6M / All range buttons.
+Below the chart, the page lists every listing (seller, price, condition; rows color-coded for new / sold / quantity change), per-listing price history, country/language filters, and per-card **Download** / **Change Link** / **Archive** buttons. A second **availability chart** shows existing vs. new stock and sold per day/week/month with a drainage % line (aggregated to weeks beyond 1 month, months beyond 6). Both charts share the 1M / 3M / 6M / All range buttons.
 
 ### Collection
 
@@ -118,6 +118,10 @@ Download/import behaviour (wait times, page-load timeout, "Show More" limit, hea
 
 - **Paste URL (easiest)** — on the **Import & Sync** page, paste a CardMarket listing URL into the **Add a Card** box and press **+ Add**. Works with any language path (`/en/`, `/de/`, `/fr/`, …).
 - **Manual** — save the page as described above; the new card is imported automatically.
+
+### When CardMarket moves a card
+
+CardMarket sometimes reshuffles products, so a card ends up under a new URL (a renamed set, an added `-V1` suffix). Downloading it under the new address would start a second, empty history. Instead open the card, click **Change Link**, paste the new CardMarket URL and save: the tracked history, the card image, the stored prices and your collection entries all move to the new address, and the card reopens under it.
 
 ## Data Storage
 

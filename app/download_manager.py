@@ -187,22 +187,13 @@ class DownloadManager:
 
     def download_from_url(self, url):
         """Parse a CardMarket URL and queue that page (non-blocking)."""
-        from urllib.parse import urlparse
-        parsed = urlparse(url.strip())
+        from app.rename import canonical_from_url
 
-        if 'cardmarket.com' not in parsed.netloc:
-            return {"success": False, "message": "URL must be from cardmarket.com"}
+        try:
+            canonical_name = canonical_from_url(url)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
 
-        parts = parsed.path.strip('/').split('/')
-        # Skip leading 2-letter language code (en, de, fr, etc.)
-        if parts and len(parts[0]) == 2 and parts[0].isalpha():
-            segments = parts[1:]
-        else:
-            segments = parts
-        if not segments:
-            return {"success": False, "message": "Could not extract card name from URL"}
-
-        canonical_name = '_'.join(segments)
         return self.download_single_page(canonical_name)
 
     def download_single_page(self, page_name):
