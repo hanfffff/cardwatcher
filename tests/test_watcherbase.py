@@ -247,6 +247,123 @@ def test_graded_only_card_falls_back_and_says_so():
     assert market['floor'] == 800.0
 
 
+def _thin_expensive_raw_page():
+    """A dried-up card: two odd, dear raw asks under a stack of cheaper slabs."""
+    now = time.time()
+    day = 86400
+    return _FakePage([
+        # What is left "raw" is sealed/bundled product, priced way above the slabs.
+        make_listing(seller="a", price=1200.0, date=now, first_date=now - 30 * day),
+        make_listing(seller="b", price=1500.0, date=now, first_date=now - 30 * day),
+        make_listing(seller="c", price=300.0, date=now, first_date=now - 30 * day,
+                     grade_company="PSA", grade=9.0),
+        make_listing(seller="d", price=320.0, date=now, first_date=now - 30 * day,
+                     grade_company="BGS", grade=9.0),
+        make_listing(seller="e", price=800.0, date=now, first_date=now - 30 * day,
+                     grade_company="PSA", grade=10.0),
+        make_listing(seller="f", price=850.0, date=now, first_date=now - 30 * day,
+                     grade_company="PSA", grade=10.0),
+    ])
+
+
+def test_thin_expensive_raw_pool_falls_back_to_the_graded_floor():
+    market = watcherbase.calculate_market_prices(_thin_expensive_raw_page())
+
+    # Not the ~1200 nobody can buy a single for: the cheapest 9 on the page.
+    assert market['floor'] == 300.0
+    assert market['basis'] == 'graded-floor'
+    assert market['n_ask'] == 2                  # still reports the raw sample
+
+
+def test_graded_floor_fallback_ignores_low_grades():
+    """A PSA 4 is worth less than a raw NM copy, so it may not set the floor."""
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=1200.0, date=now, first_date=now - 86400),
+        make_listing(seller="b", price=60.0, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=4.0),
+        make_listing(seller="c", price=70.0, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=5.0),
+        make_listing(seller="d", price=80.0, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=6.0),
+    ])
+
+    market = watcherbase.calculate_market_prices(page)
+
+    assert market['basis'] == 'raw'
+    assert market['floor'] == 1200.0
+
+
+def test_healthy_raw_pool_keeps_its_own_floor():
+    """The normal case is untouched: plenty of raw asks, slabs dearer than raw."""
+    market = watcherbase.calculate_market_prices(_mixed_page())
+
+    assert market['basis'] == 'raw'
+    assert market['floor'] <= 55.0
+
+
+def test_graded_floor_fallback_needs_more_than_one_slab():
+    """One cheap slab is an anecdote, not a market to reprice the card off."""
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=1200.0, date=now, first_date=now - 86400),
+        make_listing(seller="b", price=300.0, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=10.0),
+    ])
+
+    market = watcherbase.calculate_market_prices(page)
+
+    assert market['basis'] == 'raw'
+    assert market['floor'] == 1200.0
+
+
+def test_graded_floor_fallback_stays_in_the_raw_market_language():
+    """Substituting a Japanese slab for an English raw floor crosses markets."""
+    now = time.time()
+    page = _FakePage([
+        make_listing(seller="a", price=1200.0, date=now, first_date=now - 86400),
+        make_listing(seller="b", price=1500.0, date=now, first_date=now - 86400),
+    ] + [
+        make_listing(seller=f"jp{i}", language="Japanese", price=300.0, date=now,
+                     first_date=now - 86400, grade_company="PSA", grade=9.0)
+        for i in range(3)
+    ])
+
+    market = watcherbase.calculate_market_prices(page)
+
+    assert market['language'] == "English"
+    assert market['basis'] == 'raw'
+    assert market['floor'] == 1230.0        # the English asks' own low band
+
+
+def test_no_raw_asks_at_all_takes_the_graded_floor():
+    """The extreme case: nothing raw on offer, so report a slab, not a zero."""
+    now = time.time()
+    page = _FakePage([
+        # A realized raw sale keeps the card on the raw basis (nothing raw live).
+        make_listing(seller="a", price=900.0, quantity=0, date=now - 86400,
+                     first_date=now - 200000, ended=True),
+    ] + [
+        make_listing(seller=f"g{i}", price=p, date=now, first_date=now - 86400,
+                     grade_company="PSA", grade=9.0)
+        for i, p in enumerate([300.0, 320.0, 340.0])
+    ])
+
+    market = watcherbase.calculate_market_prices(page)
+
+    assert market['basis'] == 'graded-floor'
+    assert market['floor'] == 300.0
+    assert market['transaction'] == 900.0        # raw sales are left alone
+
+
+def test_graded_premium_is_not_reported_off_a_substituted_floor():
+    """Slab over slab is ~1x, which would read as "grading adds nothing"."""
+    page = _thin_expensive_raw_page()
+
+    assert watcherbase.calculate_market_prices(page)['basis'] == 'graded-floor'
+    assert watcherbase.calculate_graded_premium(page) == 0.0
+
+
 def test_graded_buckets_split_by_company_and_grade():
     page = _mixed_page()
 

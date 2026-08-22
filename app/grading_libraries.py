@@ -136,8 +136,17 @@ BLACK_LABEL_RE = re.compile(
 # "*MORE PSA ON MY ACCOUNT* PSA 10 - 159642249").
 NEGATION_RE = re.compile(
     r"(?<![A-Za-z])(potential(?:ly)?|pot\.|possib(?:le|ly)|maybe|expect(?:ed|ing)?"
-    r"|worthy|candidate|evtl\.?|eventuell|k[oö]nnte|vielleicht)(?![A-Za-z])",
+    r"|worthy|evtl\.?|eventuell|k[oö]nnte|vielleicht)(?![A-Za-z])",
     re.IGNORECASE,
+)
+
+# Speculation that is NOT tied to a position. Sellers write "PSA 10 candidate"
+# (and the German "PSA-Kandidat") just as readily after the grade as before it,
+# so the NEGATION_WINDOW lookbehind would miss exactly the common form. The word
+# only ever means "raw card I hope would grade this", never a slab, so its mere
+# presence disqualifies the whole comment.
+BLANKET_NEGATION_RE = re.compile(
+    r"(?<![A-Za-z])(candidate|kandidat)", re.IGNORECASE,
 )
 
 # How far back from a match to look for that speculation. Wide enough to cover
@@ -186,6 +195,16 @@ def _negated(text, start):
     return bool(NEGATION_RE.search(text[max(0, start - NEGATION_WINDOW):start]))
 
 
+def _mentions_grade(text):
+    """True when any grade pattern appears, trusted or not.
+
+    Only used to decide whether a suppressed comment is worth flagging: a
+    comment with no grading in it at all is not review-worthy.
+    """
+    return bool(GRADE_RE.search(text) or GRADE_RE_REVERSED.search(text)
+                or BLACK_LABEL_RE.search(text) or BARE_GRADE_RE.search(text))
+
+
 def parse_grade(comment):
     """Extract the professional grade a seller wrote into their comment.
 
@@ -209,6 +228,11 @@ def parse_grade(comment):
     text = comment
     if text.startswith(RELISTED_PREFIX):
         text = text[len(RELISTED_PREFIX):]
+
+    # "PSA 10 candidate" is a raw card the seller is talking up, wherever in the
+    # comment the word sits -- see BLANKET_NEGATION_RE.
+    if BLANKET_NEGATION_RE.search(text):
+        return "", None, _mentions_grade(text)
 
     found = []
     suppressed = False

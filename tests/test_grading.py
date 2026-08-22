@@ -144,6 +144,25 @@ def test_speculation_is_flagged_for_review():
     assert parse_grade("Fast shipping") == ("", None, False)
 
 
+def test_grade_candidates_are_raw_wherever_the_word_sits():
+    """"PSA 10 candidate" is a raw card being talked up, not a slab."""
+    for comment in [
+        "PSA 10 candidate",
+        "psa10 candidate, fresh from pack",
+        "Candidate PSA 10",
+        "Mint condition - BGS 9.5 candidate - fast shipping",
+        "PSA-Kandidat 10",
+        "[PSA 10] candidate",          # even the authoritative bracketed marker
+    ]:
+        company, grade, _ = parse_grade(comment)
+        assert (company, grade) == ("", None), comment
+
+
+def test_candidate_without_a_grade_is_not_flagged():
+    assert parse_grade("Great centering, grading candidate") == ("", None, False)
+    assert parse_grade("PSA 10 candidate") == ("", None, True)
+
+
 def test_conflicting_grades_take_the_first_and_flag():
     company, grade, needs_review = parse_grade(
         "SET OF 2 - PSA9 + PSA8 - Fast/safe bubblewrap shipping")
