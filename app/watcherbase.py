@@ -45,6 +45,20 @@ class watcherbase():
     BLEND_SOLD_HALFLIFE = 10.0  # days; recency horizon for trusting sold data
     # Percentile of the (outlier-filtered) asks used as the buy-now floor.
     FLOOR_PERCENTILE = 10
+    # Graded-floor fallback. On a card whose raw supply has dried up, what is
+    # left in the raw pool is often not a plain single at all -- a sealed box, a
+    # full set, a bundle -- priced far above every slab on the same page. The
+    # floor then reports a number nobody can buy this card for, while a stack of
+    # PSA/BGS 9s and 10s sits there cheaper. When the raw pool is that thin AND
+    # the slabs undercut it (an inversion: a slab normally costs more than raw),
+    # the reference-grade slab ask is the honest buy-now number instead.
+    # Requires all three: few raw asks, enough slabs to be a market, inversion.
+    GRADED_FALLBACK_MAX_RAW_ASKS = 3
+    GRADED_FALLBACK_MIN_GRADED_ASKS = 3
+    # Only high-grade slabs stand in for a raw copy. A PSA 4 is worth less than a
+    # raw NM card, so a low-grade slab would understate the floor; a 9 is the
+    # conservative choice (it trades at or above raw, never below).
+    GRADED_FALLBACK_MIN_GRADE = 9.0
     # Minimum samples before we trust the condition-filtered set; else broaden.
     MIN_CONDITION_SAMPLES = 3
     # Sentinel distinguishing "language not supplied" from an explicit None.
@@ -618,6 +632,42 @@ class watcherbase():
                 return lang
         return max(pool, key=lambda k: pool[k])
 
+    def _graded_floor_fallback(page, at_time, lang, n_raw_asks, raw_floor):
+        """Slab ask standing in for a raw floor the raw pool cannot supply.
+
+        Returns 0.0 unless every condition in GRADED_FALLBACK_* holds: the raw
+        pool is down to a handful of asks, there are enough slabs at or above
+        GRADED_FALLBACK_MIN_GRADE to call a market, and those slabs undercut the
+        raw floor. That last one is the actual tell -- a slab costs more than the
+        same card raw, so a cheaper slab means the "raw" asks are not plain
+        singles (sealed product, full sets, bundles) or are simply not sellable
+        at that price. See the constants for the full rationale.
+
+        A raw floor of 0 (nothing raw on offer at all) counts as the extreme case
+        and is filled in rather than left as a silent zero.
+
+        Language-matched like calculate_graded_premium: an English raw floor and
+        a Japanese slab are two different markets, and substituting across them
+        swaps one wrong number for another. Deliberately no condition filter --
+        the grade IS the condition of a slab -- and a plain minimum rather than a
+        percentile band, since these pools are one to three listings.
+        """
+        if n_raw_asks > watcherbase.GRADED_FALLBACK_MAX_RAW_ASKS:
+            return 0.0
+
+        active, _ = watcherbase._listings_at_time(page, at_time, 'graded')
+        prices = [p for (l, p) in active
+                  if (lang is None or l.language == lang)
+                  and l.grade is not None
+                  and l.grade >= watcherbase.GRADED_FALLBACK_MIN_GRADE]
+        if len(prices) < watcherbase.GRADED_FALLBACK_MIN_GRADED_ASKS:
+            return 0.0
+
+        graded_floor = min(prices)
+        if raw_floor > 0 and graded_floor >= raw_floor:
+            return 0.0
+        return graded_floor
+
     def calculate_market_prices(page, at_time=None, lang=_UNSET, grade='raw'):
         """Representative market price computed three ways.
 
@@ -639,6 +689,12 @@ class watcherbase():
         would leave nothing to price, so the whole pool is used instead and
         'basis' reports 'all' rather than 'raw' -- better an honestly labelled
         graded price than a silent zero.
+
+        One further edge case: a raw pool too thin and too dear to be a market
+        (see _graded_floor_fallback) hands the floor over to the cheapest
+        high-grade slab and reports 'basis' as 'graded-floor'. Only the floor is
+        substituted -- 'transaction' stays the realized raw sales -- but blend is
+        mixed from the substituted floor, since that is the buy-now side.
         """
         basis = 'raw' if grade == 'raw' else 'selected'
         active, sold = watcherbase._listings_at_time(page, at_time, grade)
@@ -688,6 +744,15 @@ class watcherbase():
                 if kept:
                     asks = kept
             floor = watcherbase._percentile(asks, watcherbase.FLOOR_PERCENTILE)
+
+        # Edge case: a raw floor priced off a couple of leftover oddities, with
+        # cheaper slabs sitting right next to them on the page.
+        if basis == 'raw':
+            substitute = watcherbase._graded_floor_fallback(
+                page, at_time, lang, len(active_f), floor)
+            if substitute > 0:
+                floor = substitute
+                basis = 'graded-floor'
 
         # Blend: adaptive mix of the sold price and the live floor. The sold
         # side's weight is scaled by confidence = min(1, W / BLEND_SOLD_FULL),
@@ -808,7 +873,8 @@ class watcherbase():
         off two English full-set listings at 2100 EUR while every slab on it is
         Portuguese or German, which read as a 0.12x "premium". Returns 0 when the
         card has no slab in that language, which is honest -- there is nothing to
-        compare.
+        compare. Likewise 0 when the market floor itself came from a slab
+        ('basis' 'graded-floor'): that would be a slab over a slab, not a premium.
         """
         market = watcherbase.calculate_market_prices(page) if market is None else market
 
