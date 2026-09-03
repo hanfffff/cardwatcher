@@ -194,7 +194,14 @@ def test_manual_grade_survives_reimport():
     assert listing.grade_source == "manual"
 
 
-def test_available_splits_raw_from_graded():
+def test_available_counts_graded_and_reports_the_split():
+    """Stock is every copy on offer; the graded share is reported next to it.
+
+    A slab is still a copy a buyer can buy, so leaving it out made a card whose
+    only listing was graded read as zero stock while that listing sat visible
+    below it. The raw/graded split that matters for *pricing* is enforced
+    separately, by watcherbase._excluded_from_raw.
+    """
     canonical = "Test_Card"
     old = Page()
     old.canonical_name = canonical
@@ -208,7 +215,7 @@ def test_available_splits_raw_from_graded():
 
     old.update_page(new)
 
-    assert old.available == 3          # raw items only
+    assert old.available == 5          # 3 raw + 2 slabs
     assert old.available_graded == 2
 
 
@@ -255,3 +262,99 @@ def test_set_listing_grade_marks_it_manual(tmp_path, monkeypatch):
     assert page.listings[0].grade_source == "manual"
 
     assert page.set_listing_grade(99, "PSA", 10.0) is False
+
+
+# --- supply accounting: items, not rows -------------------------------------
+
+def test_inserted_and_sold_count_items_not_rows():
+    """A row of N copies is N items of supply, not one.
+
+    Counting rows made the gallery badge print a stock figure in items next to a
+    change figure in rows -- "700" beside "+300" on a first import, where 300 was
+    simply CardMarket's listing cap.
+    """
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.listings = []
+
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, quantity=40, date=200.0, first_date=200.0),
+        make_listing(seller="bob", price=11.0, quantity=7, date=200.0, first_date=200.0),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert old.available == 47
+    assert old.inserted == 47          # items, not the 2 rows
+    assert old.sold == 0
+
+
+def test_sold_counts_the_copies_an_ended_listing_still_held():
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.price_average = 10.0
+    old.listings = [
+        make_listing(seller="alice", price=10.0, quantity=5, date=100.0, first_date=100.0),
+        make_listing(seller="bob", price=20.0, quantity=3, date=100.0, first_date=100.0),
+    ]
+
+    # bob is gone entirely; alice unchanged.
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, quantity=5, date=200.0, first_date=200.0),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert old.sold == 3               # bob's 3 copies, not "1 listing"
+    assert old.inserted == 0
+    assert old.available == 5
+
+
+def test_partial_quantity_change_is_item_flow():
+    """A seller going 10 -> 6 sold 4 items even though the row still stands.
+
+    Without this the identity available == previous + inserted - sold breaks the
+    moment a seller sells part of a stack, which is the common case.
+    """
+    canonical = "Test_Card"
+    old = Page()
+    old.canonical_name = canonical
+    old.price_average = 10.0
+    old.listings = [
+        make_listing(seller="alice", price=10.0, quantity=10, date=100.0, first_date=100.0),
+        make_listing(seller="bob", price=12.0, quantity=2, date=100.0, first_date=100.0),
+    ]
+    previous_available = 12
+
+    new = _make_new_page(canonical, [
+        make_listing(seller="alice", price=10.0, quantity=6, date=200.0, first_date=200.0),
+        make_listing(seller="bob", price=12.0, quantity=5, date=200.0, first_date=200.0),
+    ], price_average=10.0)
+
+    old.update_page(new)
+
+    assert old.sold == 4               # alice's 10 -> 6
+    assert old.inserted == 3           # bob's 2 -> 5
+    assert old.available == 11
+    assert old.available == previous_available + old.inserted - old.sold
+
+
+def test_archiving_a_listing_updates_stock():
+    """Archiving used to leave the stored count untouched until the next import."""
+    page = Page()
+    page.canonical_name = "Test_Card"
+    page.listings = [
+        make_listing(seller="alice", price=10.0, quantity=4),
+        make_listing(seller="bob", price=12.0, quantity=6),
+    ]
+    page.recompute_available()
+    assert page.available == 10
+
+    page.save = lambda: None           # keep the test off disk
+    page.archive_listing(1)
+    assert page.available == 4
+
+    page.unarchive_listing(1)
+    assert page.available == 10

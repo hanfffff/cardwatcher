@@ -424,10 +424,75 @@ def test_period_metrics_report_graded_alongside_raw():
 
     metrics = watcherbase.calculate_all_period_averages(page)
 
-    assert metrics['current_available'] == 5        # raw quantities only
+    # Stock is every copy on offer, raw and slabbed alike (5 + 5).
+    assert metrics['current_available'] == 10
     assert metrics['current_available_graded'] == 5
     assert set(metrics['graded']) == {"PSA 10", "BGS 9.5"}
     assert metrics['graded_premium'] > 1
-    # The headline raw numbers must not see the slabs.
+    # The headline raw *prices* must still not see the slabs.
     assert metrics['current_min'] == 40.0
     assert metrics['current_avg'] < 100
+
+
+# --- supply changes: removals must not vanish -------------------------------
+
+def test_removed_counts_the_copies_an_ended_listing_held():
+    """Page.update_page zeroes an ended listing's quantity before saving.
+
+    Summing .quantity for ended listings therefore scored every removal as zero
+    items, so listings_removed came back 0 for every tracked card -- which pinned
+    drainage at 0%, kept net supply permanently >= 0, and left the dashboard's
+    "net supply loss" panel unable to fire. The last real figure lives in
+    previous_quantities.
+    """
+    now = time.time()
+    ended = make_listing(seller="alice", price=10.0, quantity=0, ended=True,
+                         date=now - 86400, first_date=now - (30 * 86400))
+    ended.previous_quantities = [(4, now - 86400)]
+
+    added, removed = watcherbase.calculate_availability_changes(
+        _FakePage([ended]), days_ago=7)
+
+    assert added == 0
+    assert removed == 4
+
+
+def test_removed_falls_back_to_one_without_quantity_history():
+    """A listing saved before quantity history still removed at least one copy."""
+    now = time.time()
+    ended = make_listing(seller="alice", price=10.0, quantity=0, ended=True,
+                         date=now - 86400, first_date=now - (30 * 86400))
+    ended.previous_quantities = []
+
+    _added, removed = watcherbase.calculate_availability_changes(
+        _FakePage([ended]), days_ago=7)
+
+    assert removed == 1
+
+
+def test_supply_changes_count_graded_copies():
+    """Stock includes slabs, so the flow in and out of stock must too.
+
+    Counting graded copies in the total but not in the change would rebuild the
+    same unit mismatch this fix removed, just in a subtler place.
+    """
+    now = time.time()
+    fresh_slab = make_listing(seller="bob", price=800.0, quantity=2,
+                              date=now, first_date=now - 3600,
+                              grade_company="PSA", grade=10.0)
+
+    added, _removed = watcherbase.calculate_availability_changes(
+        _FakePage([fresh_slab]), days_ago=7)
+
+    assert added == 2
+
+
+def test_archived_listings_stay_out_of_supply():
+    now = time.time()
+    archived = make_listing(seller="alice", price=10.0, quantity=9, archived=True,
+                            date=now, first_date=now - 3600)
+
+    added, _removed = watcherbase.calculate_availability_changes(
+        _FakePage([archived]), days_ago=7)
+
+    assert added == 0

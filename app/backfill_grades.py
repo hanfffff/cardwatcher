@@ -74,10 +74,8 @@ def backfill(apply_changes=False, review_limit=40):
             if changed:
                 pages_changed += 1
             if changed and apply_changes:
-                # Recompute the raw/graded supply split, which save() persists.
-                live = [l for l in page.listings if not l.ended and not l.archived]
-                page.available = sum(l.quantity for l in live if not l.is_graded())
-                page.available_graded = sum(l.quantity for l in live if l.is_graded())
+                # Recompute the stock split, which save() persists.
+                page.recompute_available()
                 page.save()
                 watcherbase.update_price_history_for_page(page)
 

@@ -195,6 +195,7 @@ def cardwatcher():
             card_name=page.card,
             set_name = page.set,
             available = page.available,
+            available_graded = page.available_graded,
             cardmarket_link="https://www.cardmarket.com/en/"+page.canonical_name.replace('_','/'),
             country_selection = page.build_country_selection(),
             language_selection = page.build_language_selection(),

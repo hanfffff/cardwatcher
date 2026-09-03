@@ -56,6 +56,14 @@ CardWatcher
 	line-height: 16px;
 	white-space: nowrap;
 }
+/* Stock counts graded copies; this spells out how many of them are slabs so the
+   number is never mistaken for the raw pool the prices describe. */
+.cw-graded-split {
+	font-size: 0.85em;
+	opacity: 0.75;
+	white-space: nowrap;
+	margin-left: 4px;
+}
 .grade-editor {
 	display: flex;
 	gap: 4px;
@@ -241,7 +249,8 @@ CardWatcher
 						<dl class="labeled row mx-auto g-0">
 							<dt class="col-6 col-xl-5">Verfügbare Artikel
 							</dt>
-							<dd class="col-6 col-xl-7">{{  available  }}
+							<dd class="col-6 col-xl-7">{{  available  }}{% if available_graded %}
+								<span class="cw-graded-split" title="{{ available_graded }} of the {{ available }} cop{{ 'y' if available == 1 else 'ies' }} available {{ 'is a professionally graded slab' if available_graded == 1 else 'are professionally graded slabs' }}. Price figures on this page describe raw copies only.">incl. {{ available_graded }} graded</span>{% endif %}
 							</dd>
 						</dl>
 						<!-- Price Summary -->
@@ -2263,6 +2272,85 @@ CardWatcher
 		}
 		event.preventDefault();
 		link.replaceWith(buildEditor(link));
+	});
+})();
+</script>
+
+<script>
+/* Filter persistence -----------------------------------------------------------
+   Archiving, unarchiving and deleting a listing are plain links that reload this
+   page, and the filters are pure DOM state (checkboxes toggling hidden-* classes
+   on the rows). A reload therefore threw the filter away, which meant tidying up
+   a handful of rows made you re-pick your filter after every single click.
+
+   The checked values are stashed per card and replayed on load. Replay sets each
+   box and fires the real 'change' event rather than reimplementing the show/hide
+   rules, so the eight filter groups -- which each carry their own copy of that
+   logic -- stay the single source of truth. Boxes are ticked one at a time
+   because those handlers read the state of the whole group to decide whether
+   this is the first tick (hide everything, then reveal) or a later one (reveal
+   this value too). sessionStorage, not localStorage: a filter should outlive a
+   reload, not last until next week. */
+(function () {
+	var GROUPS = ['availability-checkbox', 'country-checkbox', 'language-checkbox',
+	              'condition-checkbox', 'firsted-checkbox', 'reverse-checkbox',
+	              'grade-checkbox', 'gradeval-checkbox'];
+	var KEY = 'cw-filters:' + (typeof canonicalName === 'string' ? canonicalName : location.search);
+
+	function read() {
+		try {
+			return JSON.parse(sessionStorage.getItem(KEY) || '{}') || {};
+		} catch (e) {
+			return {};   // private mode, cleared storage, or a stale/corrupt value
+		}
+	}
+
+	function save() {
+		var state = {};
+		GROUPS.forEach(function (cls) {
+			var checked = [];
+			document.querySelectorAll('.' + cls).forEach(function (box) {
+				if (box.checked) { checked.push(box.value); }
+			});
+			if (checked.length) { state[cls] = checked; }
+		});
+		try {
+			if (Object.keys(state).length) {
+				sessionStorage.setItem(KEY, JSON.stringify(state));
+			} else {
+				sessionStorage.removeItem(KEY);
+			}
+		} catch (e) { /* storage unavailable: filters simply stop persisting */ }
+	}
+
+	function restore() {
+		var state = read();
+		GROUPS.forEach(function (cls) {
+			var wanted = state[cls];
+			if (!wanted || !wanted.length) { return; }
+			document.querySelectorAll('.' + cls).forEach(function (box) {
+				if (wanted.indexOf(box.value) === -1 || box.checked) { return; }
+				box.checked = true;
+				// The handlers disable their box for 100ms after a change; that is
+				// per box, so ticking the rest of the group still goes through.
+				box.disabled = false;
+				box.dispatchEvent(new Event('change', { bubbles: true }));
+				box.disabled = false;
+			});
+		});
+	}
+
+	// Run after the inline scripts above have bound their change handlers.
+	window.addEventListener('load', function () {
+		restore();
+		GROUPS.forEach(function (cls) {
+			document.querySelectorAll('.' + cls).forEach(function (box) {
+				box.addEventListener('change', save);
+			});
+		});
+		// "Deselect all" clears boxes without firing change on each one.
+		document.querySelectorAll('.deselect-all-grading, [class*="deselect-all"]')
+			.forEach(function (el) { el.addEventListener('click', function () { setTimeout(save, 0); }); });
 	});
 })();
 </script>
